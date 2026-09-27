@@ -1,7 +1,8 @@
 # Publish the smallprint command to npm from this repository with npm trusted publishing (OpenID Connect): no token,
 # no one-time password, a provenance statement attached to the package. npmjs.com must list this repository and
 # this workflow file as the package's trusted publisher (package settings, Trusted Publisher, GitHub Actions).
-# Run it from the Actions tab or with: gh workflow run publish-cli.yml
+# Run it from the Actions tab or with: gh workflow run publish-cli.yml. The version is staged, not released: approve it on
+# npmjs.com (the package page, or npm stage approve <id>) and only then does it go live.
 name: Publish smallprint to npm
 on:
   workflow_dispatch:
@@ -26,4 +27,5 @@ jobs:
       - name: Publish with provenance
         working-directory: cli
         # built in the step above; --ignore-scripts skips the package's own prepublish hook, which calls pnpm
-        run: npm publish --access public --provenance --ignore-scripts
+        # staged: the version waits on npmjs.com until the owner approves it with his second factor, so the workflow alone can never release one
+        run: npm stage publish --access public --provenance --ignore-scripts
