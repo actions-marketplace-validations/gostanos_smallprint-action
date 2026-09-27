@@ -85,3 +85,13 @@ describe("the older SSE transport (decision 269)", () => {
     expect(await readSse("https://h.example/sse", 5000, fake)).toEqual({ ok: true, tools: [{ name: "t", description: "D." }] });
   });
 });
+
+describe("the live check never calls a tool (the CLI page promises it)", () => {
+  it("sends only initialize, the initialized notice and tools/list", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../src/live.ts", import.meta.url), "utf8");
+    expect(src).not.toMatch(/tools\/call/);
+    const methods = [...src.matchAll(/rpc\(\s*[^,]+,\s*"([^"]+)"/g)].map((m) => m[1]);
+    expect(new Set(methods)).toEqual(new Set(["initialize", "tools/list"]));
+  });
+});
