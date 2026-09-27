@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "written": "2026-09-27T14:22:07.541Z",
+  "scope": "project",
+  "items": [],
+  "files": [
+    {
+      "path": ".mcp.json",
+      "kind": "Claude Code MCP servers, project",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    }
+  ]
+}
