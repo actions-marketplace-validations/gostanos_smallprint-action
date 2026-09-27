@@ -4,8 +4,8 @@
 
 Small Print keeps a record of the text that MCP servers, agent skills and plugins give your AI agent, and tells you when it changes. It reads the public registries every night, keeps every version, and grades each change by a written rule: https://smallprint.dev.
 
-- **Get an email the morning something you use changes.** Sign up with just your email address at https://smallprint.dev/start, from the watch box on any entry's page, or by typing it when `npx smallprint check` asks. Pin the servers and skills you use; the daily brief shows what changed overnight and its grade, by email or Discord. No password and no card.
-- **Check what your agents have installed**, free and with no account: `npx smallprint check`, or paste a config file at https://smallprint.dev/check.
+- **Get an email the morning something you use changes.** Sign up with just your email address at https://smallprint.dev/start, from the watch box on any entry's page, or by typing it when `npx smallprint check` asks. Pin the servers and skills you use; the daily brief shows what changed overnight and its grade, by email or Discord. No password, and no credit card required.
+- **Check what your agents have installed**, free and with no account: `npx smallprint@0.1.4 check --no-upload` prints what it found and sends nothing; without the flag it asks before sending names and versions to get grades. Or paste a config file at https://smallprint.dev/check.
 - **Plans:** the Free plan keeps 25 pins and the daily brief, and every account starts with 30 days of Pro. Pro adds scheduled syncs and the instruction-file record. https://smallprint.dev/pricing
 - **New to this?** A step-by-step guide in plain words: https://smallprint.dev/guide
 
@@ -17,7 +17,7 @@ The grading rules are printed at https://smallprint.dev/how-we-grade.
 - **`npx smallprint gate`** asks the record before a session whether any server here changed since the lock or gained a high advisory; exit codes for a shell hook. CLI 0.1.4.
 - **[`mcp/`](./mcp)**: `smallprint-mcp`, an MCP server with four read-only tools over the public record (`npx -y smallprint-mcp`; registry name `dev.smallprint/smallprint`).
 - **`Dockerfile`** builds and runs that server over stdio, for registries that start a server to check it answers.
-- **[`cli/`](./cli)**: the `smallprint` command itself, the same files that are published to npm, with its tests. `npx smallprint check --no-upload` prints what it found and sends nothing.
+- **[`cli/`](./cli)**: the `smallprint` command itself, the same files that are published to npm, with its tests. `npx smallprint@0.1.4 check --no-upload` prints what it found and sends nothing.
 - **[`tools/verify-chain.mjs`](./tools/verify-chain.mjs)**: recomputes the record chain from the public API, every link, the newest day's entries hash and the Ed25519 signature; `node tools/verify-chain.mjs`.
 
 ## Small Print check, as a GitHub Action
@@ -25,7 +25,7 @@ The grading rules are printed at https://smallprint.dev/how-we-grade.
 Fails the build when the small print your agents read has changed: an MCP server's version, a skill's files, or an instruction file such as CLAUDE.md, AGENTS.md or an `.mcp.json`, compared with a lock you committed.
 
 ```yaml
-- uses: gostanos/smallprint-action@v1
+- uses: gostanos/smallprint-action@v1.5
 ```
 
 Write the lock from the repository's directory on a machine that has the intended configuration, with `--project` so it holds only what lives in the repository (the `.mcp.json`, the `.claude/` and `.cursor/` folders, `CLAUDE.md`, `AGENTS.md` and the rest), and commit it:
@@ -44,7 +44,7 @@ Inputs: `lockfile` (default `smallprint.lock`), `version` (the CLI version, defa
 The step can write what changed as a SARIF log, and GitHub's upload-sarif action turns each line into a code-scanning alert on the pull request. Needs the `--sarif` flag, which is in `smallprint` 0.1.4 and later.
 
 ```yaml
-      - uses: gostanos/smallprint-action@v1
+      - uses: gostanos/smallprint-action@v1.5
         with:
           sarif: smallprint.sarif
         continue-on-error: true
