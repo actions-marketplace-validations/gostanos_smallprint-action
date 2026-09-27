@@ -11,6 +11,8 @@ npx smallprint check --share    # also get a card link you can post
 npx smallprint check --json     # machine-readable inventory, nothing sent; says so in itself (about, sent) and names its fields at https://smallprint.dev/cli#json
 npx smallprint check --no-upload  # discover and print, nothing sent
 npx smallprint@0.1.4 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
+npx smallprint check --live          # ask your hosted servers what they serve now, and compare with the record for their version
+npx smallprint check --live-local    # the same for local servers too; shows the commands it will start and asks first
 npx smallprint show npm/mcp-remote   # the record for one entry: baseline, tools read, advisories, last releases
 npx smallprint show npm/@modelcontextprotocol/server-filesystem   # a real one: the reference filesystem server's 2026.7.10 release changed what one tool tells the agent (read_media_file now returns any file, not only images and audio); the record grades it medium
 npx smallprint check --locked --sarif smallprint.sarif   # the lock check, plus a SARIF log for a code-scanning upload

@@ -3,6 +3,7 @@
  * npx smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--base <url>]
  * npx smallprint show <registry>/<name>      the record for one entry, from the read API (decision 223)
  * npx smallprint check --locked [--sarif <file>]   the lock check, with a SARIF log for code scanning
+ * npx smallprint check --live [--live-local] [--yes]   what each server serves now against the record for its version
  * npx smallprint sync  --label "work laptop" [--yes] [--prune] [--dry-run] [--base <url>]
  *   Needs SMALLPRINT_TOKEN (or --token), minted on your brief settings page. Uploads the same
  *   inventory as check and pins it to your account, so the daily brief watches it. Also sends
@@ -27,8 +28,10 @@ import { discover, toUpload, type Discovered } from "./discover";
 import { detectFirewalls, firewallsForUpload } from "./firewalls";
 import { compareInstructions, formatInstructions, pathHash, readInstructionFiles, toFileUpload, type InstructionBaseline } from "./instructions";
 import { buildLock, diffIsEmpty, diffLock, formatDiff, LOCK_FILE, parseLock, projectItems, type LockScope, sarifLog } from "./lock";
+import type { DiscoveredServer } from "./parse";
+import { compareTools, launchFor, plainUrl, readHosted, readStdio, type RecordTool, type ToolComparison } from "./live";
 import { launchdPlist, schtasksCommand, systemdUnits, schedulePlan, systemLaunchdPlist, systemPaths, systemPlan, systemUnits } from "./schedule";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn as spawnChild } from "node:child_process";
 import { chmodSync, chownSync, copyFileSync, rmSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -274,8 +277,80 @@ function checkLocked(found: ReturnType<typeof discover>): number {
   return 2;
 }
 
+/**
+ * `check --live` and `check --live-local` (decision 269): what each server serves now against what the
+ * record holds for its version. Exit 2 when any server serves something different, 0 otherwise.
+ */
+async function live(found: ReturnType<typeof discover>): Promise<number> {
+  const servers = found.items.filter((i): i is DiscoveredServer => i.kind === "mcp");
+  const withLocal = flag("live-local");
+  const remote = servers.filter((s) => s.transport === "http" || s.transport === "sse");
+  const local = servers.filter((s) => s.transport === "stdio" && s.canonicalName);
+  if (!remote.length && !(withLocal && local.length)) {
+    console.log(withLocal ? "No hosted servers and no local servers with a package identity found; nothing to compare." : `No hosted servers found. ${local.length ? `${local.length} local server${local.length === 1 ? "" : "s"} can be compared too, with --live-local, which starts each one.` : ""}`);
+    return 0;
+  }
+  console.log("Asking each server what it serves now, and comparing names and descriptions with the record for its version.");
+  console.log("What the servers answer stays on this machine; only a registry name, a version or a host is sent to look the record up.\n");
+  let differs = 0;
+  const get = async (url: string) => { const r = await fetch(url, { headers: { accept: "application/json", "user-agent": `smallprint-cli/${VERSION}` }, signal: TIMEOUT() }); return r.ok ? r.json() : null; };
+  const receipt = async (cn: string, version: string) => {
+    const [registry, ...rest] = cn.split(":");
+    return (await get(`${base}/api/receipt/${registry}/${rest.join(":").split("/").map(encodeURIComponent).join("/")}/${encodeURIComponent(version)}`).catch(() => null)) as { tools?: RecordTool[] | null } | null;
+  };
+  const report = (label: string, cmp: ToolComparison, version: string) => {
+    if (cmp.same) { console.log(`  same     ${label}: every tool name and description matches the record, ${version}`); return; }
+    differs++;
+    console.log(`  DIFFERS  ${label}: what it serves now is not what the record holds, ${version}`);
+    if (cmp.changed.length) console.log(`           description changed: ${cmp.changed.join(", ")}`);
+    if (cmp.added.length) console.log(`           served now, not in the record: ${cmp.added.join(", ")}`);
+    if (cmp.removed.length) console.log(`           in the record, not served now: ${cmp.removed.join(", ")}`);
+  };
+  for (const s of remote) {
+    const l = launchFor(s);
+    const url = l?.url;
+    if (!url) { console.log(`  ?        ${s.name}: no address in its config`); continue; }
+    const host = new URL(url).host;
+    const rec = (await get(`${base}/api/remote?host=${encodeURIComponent(host)}`).catch(() => null)) as { entries?: { canonicalName: string; url: string; version: string | null }[] } | null;
+    const mine = plainUrl(url);
+    const entry = rec?.entries?.find((e) => plainUrl(e.url) === mine);
+    const read = await readHosted(url);
+    if (!read.ok) { console.log(`  ?        ${s.name} (${host}): ${read.why}`); continue; }
+    if (!entry || !entry.version) { console.log(`  ?        ${s.name} (${host}): serves ${read.tools.length} tools; this address is not on the record, so there is nothing to compare`); continue; }
+    const r = await receipt(entry.canonicalName, entry.version);
+    if (!r?.tools) { console.log(`  ?        ${s.name} (${host}): the record has no tool list for ${entry.version}`); continue; }
+    report(`${s.name} (${entry.canonicalName})`, compareTools(read.tools, r.tools), entry.version === "latest" ? "what it served when the record last read it" : `version ${entry.version}`);
+  }
+  if (withLocal && local.length) {
+    const plan = local.map((s) => ({ s, l: launchFor(s) })).filter((x) => x.l && x.l.command);
+    console.log(`${remote.length ? "\n" : ""}--live-local starts ${plan.length} local server${plan.length === 1 ? "" : "s"} with the command, arguments and environment in your config, asks each for its tools, and stops it:`);
+    for (const { s, l } of plan) console.log(`  ${s.name}: ${l!.command} ${l!.args.join(" ")}`);
+    let go = flag("yes");
+    if (!go) {
+      if (!process.stdin.isTTY) { console.log("\nNo terminal to ask in; nothing started. Run again with --yes to start them."); return differs ? 2 : 0; }
+      const rl = (await import("node:readline/promises")).createInterface({ input: process.stdin, output: process.stdout });
+      go = /^y(es)?$/i.test((await rl.question("\nStart them now? This runs their code, as your agent does. [y/N] ")).trim());
+      rl.close();
+    }
+    if (go) {
+      console.log("");
+      for (const { s, l } of plan) {
+        if (!s.version) { console.log(`  ?        ${s.name}: version unknown, so there is no recorded version to compare with; pin an exact version`); continue; }
+        const read = await readStdio(l!);
+        if (!read.ok) { console.log(`  ?        ${s.name}: ${read.why}`); continue; }
+        const r = await receipt(s.canonicalName!, s.version);
+        if (!r?.tools) { console.log(`  ?        ${s.name}: the record has not read the tools of ${s.version}`); continue; }
+        report(`${s.name} (${s.canonicalName} ${s.version})`, compareTools(read.tools, r.tools), `version ${s.version}`);
+      }
+    } else console.log("Nothing started.");
+  }
+  console.log(differs ? `\n${differs} server${differs === 1 ? " serves" : "s serve"} something the record does not hold for that version. If you did not change it, read the entry page before your agent uses it.` : "\nNothing served differs from the record.");
+  return differs ? 2 : 0;
+}
+
 async function check(): Promise<number> {
   const found = discover();
+  if (flag("live") || flag("live-local")) return live(found);
   if (flag("locked")) return checkLocked(found);
   if (flag("json")) {
     const instructions = readInstructionFiles().map((f) => ({ host: f.host, path: f.path, sha256: f.sha256 }));
@@ -389,6 +464,22 @@ async function offerBrief(payload: ReturnType<typeof toUpload>): Promise<number>
   return 0;
 }
 
+/**
+ * A desktop notification, best effort, never an error (decision 270): macOS through osascript, Linux through
+ * notify-send when it is installed, nothing on Windows or when running as root, where there is no desktop to show it on.
+ */
+function desktopNotify(title: string, body: string): void {
+  if (typeof process.getuid === "function" && process.getuid() === 0) return;
+  const clean = (s: string) => s.replace(/["\\]/g, "").slice(0, 200);
+  try {
+    const sp = spawnChild;
+    if (process.platform === "darwin") sp("osascript", ["-e", `display notification "${clean(body)}" with title "Small Print" subtitle "${clean(title)}"`], { stdio: "ignore", detached: true }).unref();
+    else if (process.platform === "linux") sp("notify-send", ["Small Print: " + clean(title), clean(body)], { stdio: "ignore", detached: true }).on("error", () => undefined).unref();
+  } catch {
+    /* no desktop */
+  }
+}
+
 async function sync(): Promise<number> {
   const token = readToken();
   if (opt("token")) console.error("Note: --token shows up in shell history and process listings; prefer SMALLPRINT_TOKEN in the environment or the token file (see --help).");
@@ -488,6 +579,8 @@ async function sync(): Promise<number> {
     // the scheduled run: one line when nothing changed, the alerts when something did
     console.log(`[${new Date().toISOString()}] ${summary} ${r.files ? `${r.files.recorded} instruction files reported` : ""}${alerts.length ? `; ${alerts.length} CHANGED` : ""}`);
     for (const a of alerts) console.log(a);
+    // a desktop notification from the scheduled run when an instruction file changed (decision 270); --no-notify turns it off
+    if (alerts.length && !flag("no-notify")) desktopNotify(`${alerts.length} instruction file${alerts.length === 1 ? "" : "s"} changed on "${label}"`, "If that was not you, read the file before your agent does. It is in your next brief.");
     for (const p of problems) console.log(p);
     return 0;
   }
