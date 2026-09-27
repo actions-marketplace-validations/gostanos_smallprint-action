@@ -3,6 +3,7 @@
 The thin, open client for [Small Print](https://smallprint.dev): find the MCP servers and agent skills your agents have installed, see what the advisory databases have on record for them, and get a grade with the rule printed next to it.
 
 ```
+npx smallprint@0.1.4 check --no-upload   # see what your agents installed; nothing is sent, ever, with this flag
 npx smallprint check            # discover and print; asks before it sends anything, then grades; then one question: watch these every morning?
 npx smallprint check --upload   # answer the send question up front (a script or CI has no terminal to ask in, so without it nothing is sent)
 npx smallprint check --email you@company.com   # answer it up front; --no-signup never asks
@@ -11,6 +12,7 @@ npx smallprint check --json     # machine-readable inventory, nothing sent; says
 npx smallprint check --no-upload  # discover and print, nothing sent
 npx smallprint@0.1.4 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
 npx smallprint show npm/mcp-remote   # the record for one entry: baseline, tools read, advisories, last releases
+npx smallprint show npm/@modelcontextprotocol/server-filesystem   # a real one: the reference filesystem server's 2026.7.10 release changed what one tool tells the agent (read_media_file now returns any file, not only images and audio); the record grades it medium
 npx smallprint check --locked --sarif smallprint.sarif   # the lock check, plus a SARIF log for a code-scanning upload
 
 SMALLPRINT_TOKEN=sp_... npx smallprint sync --label "work laptop"   # pin what you run to your daily brief
