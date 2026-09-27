@@ -1,0 +1,20 @@
+name: Small Print check
+# The record's own check, run on this repository (decision 264): the plugin's MCP configuration is locked in
+# plugin/smallprint.lock, and this fails when that file changes away from the lock. Nothing is sent anywhere.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 11 * * *"
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Compare the plugin's configuration with its lock
+        working-directory: plugin
+        run: npx -y smallprint@0.1.4 check --locked --no-upload --no-signup
