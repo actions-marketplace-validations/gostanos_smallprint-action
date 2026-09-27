@@ -1,5 +1,8 @@
 # Small Print
 
+[![Small Print check](https://github.com/gostanos/smallprint-action/actions/workflows/small-print.yml/badge.svg)](https://github.com/gostanos/smallprint-action/actions/workflows/small-print.yml)
+
+
 [![M8ven Score](https://m8ven.ai/badge/mcp/gostanos-smallprint-action-12nii2?v=f92621c28b9eb0ba49f7f8dc22ea074d&variant=verified)](https://m8ven.ai/mcp/gostanos-smallprint-action-12nii2)
 
 Small Print keeps a record of the text that MCP servers, agent skills and plugins give your AI agent, and tells you when it changes. It reads the public registries every night, keeps every version, and grades each change by a written rule: https://smallprint.dev.
