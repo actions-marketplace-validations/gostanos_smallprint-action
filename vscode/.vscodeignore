@@ -1,0 +1,8 @@
+src/**
+test/**
+node_modules/**
+tsconfig.json
+tsup.config.ts
+**/*.map
+media/screens/**
+.gitignore
