@@ -1,0 +1,150 @@
+{
+  "name": "smallprint-vscode",
+  "displayName": "Small Print (MCP)",
+  "description": "Watch the MCP servers, skills and instruction files your agents use, and get a notice when what they tell your agent changes. Nothing is sent until you allow it.",
+  "version": "0.1.0",
+  "publisher": "smallprint",
+  "license": "MIT",
+  "private": true,
+  "icon": "media/icon.png",
+  "homepage": "https://smallprint.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gostanos/smallprint-action.git",
+    "directory": "vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "Linters"
+  ],
+  "keywords": [
+    "mcp",
+    "model context protocol",
+    "claude code",
+    "cursor",
+    "agent skills",
+    "security",
+    "small print"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "smallprint",
+          "title": "Small Print",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "smallprint": [
+        {
+          "id": "smallprint.watch",
+          "name": "Watching"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "smallprint.checkNow",
+        "title": "Small Print: Check now",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "smallprint.allowLookup",
+        "title": "Small Print: Allow looking up server names on smallprint.dev"
+      },
+      {
+        "command": "smallprint.showSent",
+        "title": "Small Print: Show what would be sent"
+      },
+      {
+        "command": "smallprint.openEntry",
+        "title": "Small Print: Open on smallprint.dev"
+      },
+      {
+        "command": "smallprint.showFileChange",
+        "title": "Small Print: Show what changed"
+      },
+      {
+        "command": "smallprint.acceptAll",
+        "title": "Small Print: Mark all as seen"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "smallprint.checkNow",
+          "when": "view == smallprint.watch",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "smallprint.openEntry",
+          "when": "false"
+        },
+        {
+          "command": "smallprint.showFileChange",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Small Print",
+      "properties": {
+        "smallprint.lookup": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "allow",
+            "never"
+          ],
+          "default": "ask",
+          "markdownDescription": "Whether the names and versions of your MCP servers may be sent to smallprint.dev to compare them with the public record. Nothing else is ever sent: no config values, no keys, no paths, no file contents. `never` keeps every watch on this machine."
+        },
+        "smallprint.notify": {
+          "type": "string",
+          "enum": [
+            "high",
+            "any",
+            "none"
+          ],
+          "default": "high",
+          "markdownDescription": "Which changes pop a notice. `high`: changed instruction files and skills, advisories, and changes graded high or critical. `any`: every graded change. Everything is always listed in the Small Print view."
+        },
+        "smallprint.checkEveryHours": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 48,
+          "description": "How often to check the record for the servers you use."
+        },
+        "smallprint.baseUrl": {
+          "type": "string",
+          "default": "https://smallprint.dev",
+          "description": "The record to compare with."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json",
+    "package": "pnpm build && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.90.0",
+    "tsup": "^8.5.1",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
