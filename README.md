@@ -38,6 +38,8 @@ npx smallprint lock --project
 git add smallprint.lock
 ```
 
+To see it working, [gostanos/smallprint-demo](https://github.com/gostanos/smallprint-demo) passes on its main branch, and [its open pull request](https://github.com/gostanos/smallprint-demo/pull/1) fails because it moves the filesystem server to a version whose tool description changed.
+
 The check is local: it reads the repository's config and instruction files, compares them with the lock, and sends nothing anywhere. It exits 2 when something changed and prints what. When the change is yours, run `npx smallprint lock --project` again and commit. A lock written without `--project` also holds the machine's home-directory entries, which a CI runner does not have, so that check would fail on every run; the lock records which kind it is and the check honours it.
 
 Inputs: `lockfile` (default `smallprint.lock`), `version` (the CLI version, default 0.1.5).
