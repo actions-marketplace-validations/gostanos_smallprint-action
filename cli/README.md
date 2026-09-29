@@ -61,13 +61,13 @@ With [pre-commit](https://pre-commit.com), the same check runs before every comm
 ```yaml
 repos:
   - repo: https://github.com/gostanos/smallprint-action
-    rev: v1.7
+    rev: v1.8
     hooks:
       - id: smallprint-locked   # runs smallprint check --locked; the commit stops when anything differs from the lock
       - id: smallprint-lock     # only when you ask: pre-commit run smallprint-lock --hook-stage manual
 ```
 
-pre-commit installs the pinned version of this package from npm. `smallprint-locked` compares this repository with the lock on your machine and sends nothing. `smallprint-lock` writes the lock with `--project`, and like `smallprint lock` it asks the record for each server's digest by registry name; add `args: [--offline]` under it to skip that. pre-commit reports `smallprint-lock` as failed whenever it rewrote the file, which is how pre-commit shows that a hook changed a file, so read the change and commit it. If pre-commit 4.6 stops with `EALLOWGIT` while installing the hooks, the npm on that machine has a bug that newer npm releases fix, so updating npm solves it.
+The hooks run the pinned version of this package with `npx`, so the machine needs Node 18 or later. `smallprint-locked` compares this repository with the lock on your machine and sends nothing. `smallprint-lock` writes the lock with `--project`, and like `smallprint lock` it asks the record for each server's digest by registry name; add `args: [--offline]` under it to skip that. pre-commit reports `smallprint-lock` as failed whenever it rewrote the file, which is how pre-commit shows that a hook changed a file, so read the change and commit it.
 
 ## Before a session: ask the record
 

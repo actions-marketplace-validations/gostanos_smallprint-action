@@ -1,7 +1,0 @@
-{
-  "name": "smallprint-pre-commit-hooks",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Lets pre-commit install the smallprint command for the hooks in .pre-commit-hooks.yaml. It is not published to npm; the command itself is the smallprint package.",
-  "license": "MIT"
-}
