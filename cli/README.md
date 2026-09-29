@@ -25,6 +25,8 @@ SMALLPRINT_TOKEN=sp_... npx smallprint schedule --install --label "work laptop" 
 
 Inside Claude Code, the same check is a plugin: `claude plugin marketplace add gostanos/smallprint-action`, then `claude plugin install smallprint@smallprint`, and `/smallprint:check` runs it with nothing sent. The plugin also bundles Small Print's MCP server, so Claude can read the record itself.
 
+In VS Code or Cursor, the Small Print extension (`smallprint.smallprint-vscode`, on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=smallprint.smallprint-vscode) and [Open VSX](https://open-vsx.org/extension/smallprint/smallprint-vscode)) watches the same instruction files and skills in the editor, and after you allow it, looks up your MCP servers in the record by package name.
+
 New to MCP servers and agent skills? https://smallprint.dev/guide is a step-by-step guide in plain words, and https://smallprint.dev/learn explains the basics in three levels, from what a terminal is to how to tell when an MCP server changes, with every fact linked to an official source.
 
 Small Print is not only a lookup: pin what you run and it emails you the morning any of it changes, with the change and its grade. Free keeps 25 pins, that daily brief, and the off-machine record of your instruction files from each sync you run yourself; Pro adds the scheduled sync on every machine, which keeps that record current without you (prices at https://smallprint.dev/pricing). Signing up is the question at the end of `check`: type your email, the account is created, everything found is pinned, and one emailed link turns the daily brief on. Your email is the account and the link is the login; no password. A token (from your settings page) is only needed to pin a second machine with `sync`. Every account starts with 30 days of Pro, no credit card required. After that, Free keeps 25 pins and the instruction file record from a sync you run by hand; the scheduled runs are Pro. The full guide with sample output is at https://smallprint.dev/cli.
@@ -67,7 +69,7 @@ It reads Claude Desktop, Claude Code, Cursor, Windsurf, Codex, VS Code, Zed, Gem
 
 Every trust page is also JSON: `GET /api/asset/npm/@modelcontextprotocol/server-filesystem`. Every advisory too: `GET /api/advisory/CVE-2025-6514`. One exact version has a receipt, the digest of its tool names, descriptions and input schemas plus the signed chain row that covers it: `GET /api/receipt/npm/mcp-remote/0.14.3`. The words inside every entry's tool text: `GET /api/search?q=webhook`. One item per request, rate limited, same attribution and printed criteria as the pages.
 
-Inside an agent instead of a terminal: the MCP server `smallprint-mcp` (`npx -y smallprint-mcp`, registry name `dev.smallprint/smallprint`) reads the same record with three tools: lookup_entry, changes_since, advisories_for.
+Inside an agent instead of a terminal: the MCP server `smallprint-mcp` (`npx -y smallprint-mcp`, registry name `dev.smallprint/smallprint`) reads the same record with four tools: lookup_entry, changed_since_approval, changes_since, advisories_for.
 
 ## Source
 
