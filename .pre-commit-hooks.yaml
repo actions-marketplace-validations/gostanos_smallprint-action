@@ -1,0 +1,20 @@
+# Hooks for pre-commit (https://pre-commit.com). ops/deploy/mirror-cli.sh copies this file, and the package.json beside
+# it, to the root of the public repository gostanos/smallprint-action, where pre-commit looks for them. The
+# smallprint@ pin moves with ops/deploy/bump-cli.sh, and apps/web/test/cli-pin.test.ts fails if it is left behind.
+- id: smallprint-locked
+  name: smallprint check --locked
+  description: Compares the MCP servers, skills and instruction files here with smallprint.lock, and fails with exit 2 when anything changed. It runs on this machine only and sends nothing.
+  entry: smallprint check --locked
+  language: node
+  additional_dependencies: ["smallprint@0.1.5"]
+  pass_filenames: false
+  always_run: true
+- id: smallprint-lock
+  name: smallprint lock --project
+  description: Writes smallprint.lock for this repository. Run it by hand with "pre-commit run smallprint-lock --hook-stage manual", read the change, and commit it. It asks the record for each server's digest by registry name; add --offline under args to skip that.
+  entry: smallprint lock --project
+  language: node
+  additional_dependencies: ["smallprint@0.1.5"]
+  pass_filenames: false
+  always_run: true
+  stages: [manual]
