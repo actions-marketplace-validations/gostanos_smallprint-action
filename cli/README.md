@@ -69,7 +69,7 @@ It reads Claude Desktop, Claude Code, Cursor, Windsurf, Codex, VS Code, Zed, Gem
 
 Every trust page is also JSON: `GET /api/asset/npm/@modelcontextprotocol/server-filesystem`. Every advisory too: `GET /api/advisory/CVE-2025-6514`. One exact version has a receipt, the digest of its tool names, descriptions and input schemas plus the signed chain row that covers it: `GET /api/receipt/npm/mcp-remote/0.14.3`. The words inside every entry's tool text: `GET /api/search?q=webhook`. One item per request, rate limited, same attribution and printed criteria as the pages.
 
-Inside an agent instead of a terminal: the MCP server `smallprint-mcp` (`npx -y smallprint-mcp`, registry name `dev.smallprint/smallprint`) reads the same record with three tools: lookup_entry, changes_since, advisories_for.
+Inside an agent instead of a terminal: the MCP server `smallprint-mcp` (`npx -y smallprint-mcp`, registry name `dev.smallprint/smallprint`) reads the same record with four tools: lookup_entry, changed_since_approval, changes_since, advisories_for.
 
 ## Source
 
