@@ -54,6 +54,21 @@ npx smallprint check --locked   # compares with the lock; exit 2 when anything c
 
 The lock holds names, versions, hosts and hashes, and the paths of instruction files, never a configuration value. For a server with a registry identity and a version it also carries the record's digest of that version's tool names, descriptions and input schemas, fetched when the lock is written (`--offline` skips it), and `smallprint gate` says when the record's digest for that version has changed since. Commit it; `check --locked` then says exactly what changed, on a laptop or in CI. The GitHub Action in `action/` of the repository runs that one command.
 
+### As a pre-commit hook
+
+With [pre-commit](https://pre-commit.com), the same check runs before every commit. Add this to `.pre-commit-config.yaml` in the repository that holds the lock:
+
+```yaml
+repos:
+  - repo: https://github.com/gostanos/smallprint-action
+    rev: v1.8
+    hooks:
+      - id: smallprint-locked   # runs smallprint check --locked; the commit stops when anything differs from the lock
+      - id: smallprint-lock     # only when you ask: pre-commit run smallprint-lock --hook-stage manual
+```
+
+The hooks run the pinned version of this package with `npx`, so the machine needs Node 18 or later. `smallprint-locked` compares this repository with the lock on your machine and sends nothing. `smallprint-lock` writes the lock with `--project`, and like `smallprint lock` it asks the record for each server's digest by registry name; add `args: [--offline]` under it to skip that. pre-commit reports `smallprint-lock` as failed whenever it rewrote the file, which is how pre-commit shows that a hook changed a file, so read the change and commit it.
+
 ## Before a session: ask the record
 
 ```sh
