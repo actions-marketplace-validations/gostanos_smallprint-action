@@ -8,9 +8,9 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { discover, type DiscoveredServer, type DiscoveredSkill } from "../../cli/src/discover";
 import { readInstructionFiles, type InstructionFile } from "../../cli/src/instructions";
-import { evaluateLocal, evaluateServer, notifies, type Finding, type RecordEntry, type ServerState } from "./core";
+import { DEFAULT_BASE, evaluateLocal, evaluateServer, notifies, safeBase, userSetting, type Finding, type RecordEntry, type ServerState } from "./core";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.2";
 const LOCAL_SCAN_MS = 10 * 60_000;
 const OWN_SAVE_MS = 15_000;
 
@@ -27,6 +27,9 @@ const EMPTY: Stored = { servers: {}, skills: {}, files: {}, findings: [], lastLo
 
 const sha = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
 const cfg = () => vscode.workspace.getConfiguration("smallprint");
+// what may leave the machine, and to where, comes from the user's own settings only, never a workspace's (security audit item 40)
+const lookupSetting = () => userSetting(cfg().inspect<string>("lookup"), "ask");
+const baseSetting = () => safeBase(userSetting(cfg().inspect<string>("baseUrl"), DEFAULT_BASE));
 const et = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "never");
 const home = homedir();
 const tilde = (p: string) => (p.startsWith(home) ? `~${p.slice(home.length)}` : p);
@@ -58,6 +61,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("smallprint.checkNow", () => runAll(true)),
     vscode.commands.registerCommand("smallprint.allowLookup", async () => { await cfg().update("lookup", "allow", vscode.ConfigurationTarget.Global); await runAll(true); }),
     vscode.commands.registerCommand("smallprint.showSent", showSent),
+    vscode.commands.registerCommand("smallprint.askLookup", () => checkRecord(true)),
     vscode.commands.registerCommand("smallprint.openEntry", (url: string) => vscode.env.openExternal(vscode.Uri.parse(url))),
     vscode.commands.registerCommand("smallprint.showFileChange", showFileChange),
     vscode.commands.registerCommand("smallprint.acceptAll", async () => { const s = load(); for (const f of s.findings) if (f.kind === "file-changed" && f.url) await keepCopy(f.url); s.findings = []; await save(s); refresh(); }),
@@ -125,7 +129,7 @@ function watchFiles(): void {
 
 /** Ask the record about each MCP server with a package identity, if the person allowed it. Only the name is sent. */
 async function checkRecord(asked: boolean): Promise<void> {
-  const lookup = cfg().get<string>("lookup", "ask");
+  const lookup = lookupSetting();
   const named = servers.filter((x) => x.canonicalName);
   if (!named.length || lookup === "never") { refresh(); return; }
   if (lookup === "ask") {
@@ -139,7 +143,7 @@ async function checkRecord(asked: boolean): Promise<void> {
     if (pick !== "Allow") { refresh(); return; }
     await cfg().update("lookup", "allow", vscode.ConfigurationTarget.Global);
   }
-  const base = cfg().get<string>("baseUrl", "https://smallprint.dev").replace(/\/$/, "");
+  const base = baseSetting();
   const s = load();
   const fresh: Finding[] = [];
   let failed = 0;
@@ -196,7 +200,7 @@ async function showFileChange(path: string): Promise<void> {
 }
 
 async function showSent(): Promise<void> {
-  const base = cfg().get<string>("baseUrl", "https://smallprint.dev").replace(/\/$/, "");
+  const base = baseSetting();
   const lines = [
     "What Small Print for VS Code sends, and only after you allow it:",
     "",
@@ -217,8 +221,12 @@ async function showSent(): Promise<void> {
 function refresh(): void {
   const s = load();
   const open = s.findings.length;
-  status.text = open ? `$(warning) Small Print: ${open} to look at` : "$(shield) Small Print";
-  status.tooltip = open ? `${open} change${open === 1 ? "" : "s"} to what your agents read. Click to see them.` : `Watching ${servers.length} MCP servers, ${skills.length} skills and ${files.length} instruction files. Last checked ${et(s.lastRecordAt ?? s.lastLocalAt)}.`;
+  // the one-time question slides away on its own in VS Code, so until the person answers it the status bar keeps asking
+  // (30 Sep 2026: 375 store downloads and not one lookup from an outside machine)
+  const unanswered = !open && lookupSetting() === "ask" && servers.some((x) => x.canonicalName);
+  status.command = unanswered ? "smallprint.askLookup" : "workbench.view.extension.smallprint";
+  status.text = open ? `$(warning) Small Print: ${open} to look at` : unanswered ? "$(question) Small Print: check your MCP servers?" : "$(shield) Small Print";
+  status.tooltip = unanswered ? "Click to choose whether Small Print may look up your MCP servers on smallprint.dev by package name. Nothing is sent until you choose Allow." : open ? `${open} change${open === 1 ? "" : "s"} to what your agents read. Click to see them.` : `Watching ${servers.length} MCP servers, ${skills.length} skills and ${files.length} instruction files. Last checked ${et(s.lastRecordAt ?? s.lastLocalAt)}.`;
   status.show();
   tree.fire();
 }
@@ -239,7 +247,7 @@ class WatchTree implements vscode.TreeDataProvider<Node> {
   getChildren(n?: Node): Node[] {
     if (n) return n.children ?? [];
     const s = load();
-    const lookup = cfg().get<string>("lookup", "ask");
+    const lookup = lookupSetting();
     const roots: Node[] = [];
     if (s.findings.length) roots.push({ id: "findings", label: "Needs a look", description: String(s.findings.length), icon: "warning", color: "list.warningForeground", children: s.findings.map((f) => ({
       id: `f:${f.key}`, label: f.title, tooltip: `${f.title}\n\n${f.detail}`, icon: f.kind === "advisory" ? "shield" : f.kind === "file-changed" ? "diff" : "warning", color: f.grade === "critical" || f.grade === "high" ? "list.errorForeground" : "list.warningForeground",

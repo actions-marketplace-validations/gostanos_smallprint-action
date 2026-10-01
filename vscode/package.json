@@ -2,7 +2,7 @@
   "name": "smallprint-vscode",
   "displayName": "Small Print (MCP)",
   "description": "Watch the MCP servers, skills and instruction files your agents use, and get a notice when what they tell your agent changes. Nothing is sent until you allow it.",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "publisher": "smallprint",
   "license": "MIT",
   "private": true,
@@ -76,6 +76,10 @@
       {
         "command": "smallprint.acceptAll",
         "title": "Small Print: Mark all as seen"
+      },
+      {
+        "command": "smallprint.askLookup",
+        "title": "Small Print: Choose whether to check your MCP servers"
       }
     ],
     "menus": {
@@ -108,6 +112,7 @@
             "never"
           ],
           "default": "ask",
+          "scope": "application",
           "markdownDescription": "Whether the names and versions of your MCP servers may be sent to smallprint.dev to compare them with the public record. Nothing else is ever sent: no config values, no keys, no paths, no file contents. `never` keeps every watch on this machine."
         },
         "smallprint.notify": {
@@ -130,7 +135,9 @@
         "smallprint.baseUrl": {
           "type": "string",
           "default": "https://smallprint.dev",
-          "description": "The record to compare with."
+          "scope": "application",
+          "pattern": "^https://",
+          "description": "The record to compare with. Read from your user settings only, and https only."
         }
       }
     }

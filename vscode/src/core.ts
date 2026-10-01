@@ -91,3 +91,31 @@ export function notifies(f: Finding, level: "high" | "any" | "none"): boolean {
   if (f.kind === "file-changed" || f.kind === "skill-changed" || f.kind === "advisory") return true;
   return level === "any" ? f.grade !== "info" : atLeast(f.grade, "high");
 }
+
+/**
+ * The two settings that decide what leaves the machine and where it goes (security audit of 29 Sep 2026, item 40; tools
+ * audit fix 7) are read from the user's own settings only. package.json marks them `"scope": "application"`, so VS Code
+ * ignores a workspace's value, and the extension also reads the user-level value through `inspect`, so a repository's
+ * .vscode/settings.json can neither turn the lookup on without asking nor point it at another address.
+ */
+export interface Inspected<T> {
+  defaultValue?: T;
+  globalValue?: T;
+}
+
+export function userSetting<T>(inspected: Inspected<T> | undefined, fallback: T): T {
+  return inspected?.globalValue ?? inspected?.defaultValue ?? fallback;
+}
+
+export const DEFAULT_BASE = "https://smallprint.dev";
+
+/** The record's address: https only, with no user name, password, query or fragment; anything else falls back to smallprint.dev. */
+export function safeBase(value: string | undefined): string {
+  try {
+    const u = new URL((value ?? "").trim());
+    if (u.protocol !== "https:" || u.username || u.password || u.search || u.hash) return DEFAULT_BASE;
+    return u.href.replace(/\/$/, "");
+  } catch {
+    return DEFAULT_BASE;
+  }
+}
