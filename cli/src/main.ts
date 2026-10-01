@@ -27,12 +27,15 @@ import { dirname, join, sep } from "node:path";
 import { discover, toUpload, type Discovered } from "./discover";
 import { detectFirewalls, firewallsForUpload } from "./firewalls";
 import { compareInstructions, formatInstructions, pathHash, readInstructionFiles, toFileUpload, type InstructionBaseline } from "./instructions";
+import { advisoriesForVersion, advisoryWords } from "./gate";
+import { isPrivateHost, withoutPrivateHosts } from "./private-host";
+import { machineSalt, SALT_SHAPE, saltFile } from "./salt";
 import { buildLock, diffIsEmpty, diffLock, formatDiff, LOCK_FILE, parseLock, projectItems, type LockScope, sarifLog } from "./lock";
 import type { DiscoveredServer } from "./parse";
 import { compareTools, launchFor, plainUrl, readHosted, readStdio, type RecordTool, type ToolComparison } from "./live";
 import { launchdPlist, schtasksCommand, systemdUnits, schedulePlan, systemLaunchdPlist, systemPaths, systemPlan, systemUnits } from "./schedule";
 import { execFileSync, spawn as spawnChild } from "node:child_process";
-import { chmodSync, chownSync, copyFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, chownSync, copyFileSync, lstatSync, rmSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
@@ -62,7 +65,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "0.1.5";
+const VERSION = "0.1.6";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -80,6 +83,8 @@ interface State {
   instructions?: InstructionBaseline;
   /** Scheduled runs so far: the first reports at once, later ones wait a random slice of the interval. */
   scheduledRuns?: number;
+  /** "<base> <label>" for each machine label whose record has moved to keyed hashes; the unkeyed ones are not sent again. */
+  keyedLabels?: string[];
 }
 function stateFile(): string {
   const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
@@ -282,6 +287,13 @@ function checkLocked(found: ReturnType<typeof discover>): number {
  * record holds for its version. Exit 2 when any server serves something different, 0 otherwise.
  */
 async function live(found: ReturnType<typeof discover>): Promise<number> {
+  // --no-upload promises that nothing leaves the machine, and the live check has to ask smallprint.dev for the record of
+  // each server (a registry name, a version or a host) and ask each hosted server for its tools; so with --no-upload it
+  // asks nothing at all (tools audit of 29 Sep 2026, fix 6)
+  if (flag("no-upload")) {
+    console.log("--no-upload: nothing sent, so nothing was compared. The live check asks smallprint.dev for the record of each server, by its registry name, version or host, and asks each hosted server for its tools. Run it without --no-upload to compare.");
+    return 0;
+  }
   const servers = found.items.filter((i): i is DiscoveredServer => i.kind === "mcp");
   const withLocal = flag("live-local");
   const remote = servers.filter((s) => s.transport === "http" || s.transport === "sse");
@@ -311,6 +323,8 @@ async function live(found: ReturnType<typeof discover>): Promise<number> {
     const url = l?.url;
     if (!url) { console.log(`  ?        ${s.name}: no address in its config`); continue; }
     const host = new URL(url).host;
+    // a private address is never on the record, and asking about one would tell smallprint.dev about this network
+    if (isPrivateHost(host)) { console.log(`  ?        ${s.name} (${host}): a private address, so it was not looked up on the record and there is nothing to compare`); continue; }
     const rec = (await get(`${base}/api/remote?host=${encodeURIComponent(host)}`).catch(() => null)) as { entries?: { canonicalName: string; url: string; version: string | null }[] } | null;
     const mine = plainUrl(url);
     const entry = rec?.entries?.find((e) => plainUrl(e.url) === mine);
@@ -363,7 +377,7 @@ async function check(): Promise<number> {
   for (const e of found.errors) console.log(`  could not read ${e.path}: ${e.error}`);
   console.log("");
   if (!found.items.length) {
-    console.log("No MCP servers or skills found in the locations above (Claude Desktop, Claude Code, Cursor, Windsurf, Codex, OpenClaw, Hermes, harnOS).");
+    console.log("No MCP servers or skills found in the locations above (Claude Desktop, Claude Code and its plugins, Cursor, Windsurf, Codex, VS Code, Cline, Roo, OpenClaw, Hermes, harnOS).");
     console.log("Have a config somewhere else? Paste it at https://smallprint.dev/check.");
     reportInstructions();
     return 0;
@@ -379,7 +393,7 @@ async function check(): Promise<number> {
     console.log("\n--no-upload: nothing sent.");
     return 0;
   }
-  const payload = toUpload(found.items);
+  const payload = withoutPrivateHosts(toUpload(found.items)); // a private host is never sent (tools audit fix 6)
   // nothing leaves the machine until the person says so (decision 239): the list above is what would be sent, as names,
   // versions, hosts and file hashes; the question is asked in a terminal, and without one nothing is sent
   const what = `${payload.length} item${payload.length === 1 ? "" : "s"} (names, versions, hosts, file hashes; no config values)`;
@@ -502,20 +516,25 @@ async function sync(): Promise<number> {
   }
   const found = discover();
   say(`Read ${found.read.length} config location${found.read.length === 1 ? "" : "s"}.`);
-  const instructionFiles = readInstructionFiles(homedir(), process.cwd());
-  const byPathHash = new Map(instructionFiles.map((f) => [pathHash(f.path), f.path]));
-  const fileUpload = toFileUpload(instructionFiles, process.cwd());
+  // path hashes, project scopes and MCP env hashes are keyed with this machine's salt (security audit item 36); the first
+  // keyed sync for a label also sends the unkeyed hashes once, so the record moves its rows instead of losing their history
+  const key = machineSalt(true);
+  const keyedId = `${base} ${label}`;
+  const migrate = Boolean(key) && !(readState().keyedLabels ?? []).includes(keyedId);
+  const instructionFiles = readInstructionFiles(homedir(), process.cwd(), [], key);
+  const byPathHash = new Map(instructionFiles.map((f) => [pathHash(f.path, key), f.path]));
+  const fileUpload = toFileUpload(instructionFiles, process.cwd(), key, migrate);
   if (!found.items.length && !instructionFiles.length) {
     console.log("Nothing to pin: no MCP servers, skills or instruction files found.");
     return 0;
   }
   if (!quiet) printTable(found.items);
-  const payload = toUpload(found.items);
+  const payload = withoutPrivateHosts(toUpload(found.items)); // a private host is never sent (tools audit fix 6)
   // agent firewalls on this machine, names only (decision 156): a count for Small Print, shown in no brief and on no page
   const firewalls = firewallsForUpload(detectFirewalls());
   say(`Agent firewalls: ${firewalls.length ? firewalls.join(", ") : "none detected"}${firewalls.length ? " (name only is sent)" : ""}`);
   say(`\nWill pin ${payload.length} item${payload.length === 1 ? "" : "s"} to your account as machine "${label}" via ${base}/api/sync, and record ${instructionFiles.length} instruction file${instructionFiles.length === 1 ? "" : "s"} there.`);
-  say("Sent: names, versions, hosts, file hashes (for a skill, its SKILL.md hash and one hash over all its files); for instruction files a kind label, a hash of the path and the content hash; the names of any agent firewalls found. Not sent: paths, file lists, config values, env vars, tokens, file contents, anything about a firewall but its name.");
+  say("Sent: names, versions, hosts, file hashes (for a skill, its SKILL.md hash and one hash over all its files); for instruction files a kind label, a hash of the path keyed with a salt that stays on this machine, and the content hash; the names of any agent firewalls found. Not sent: paths, file lists, config values, env vars, tokens, file contents, anything about a firewall but its name.");
   if (flag("dry-run")) {
     for (const f of fileUpload.files) console.log(`  ${pad(f.kind, 44)} ${f.sha256.slice(0, 12)}  path hash ${f.pathHash.slice(0, 12)}`);
     console.log("--dry-run: nothing sent.");
@@ -540,7 +559,7 @@ async function sync(): Promise<number> {
   }
   let res: Response;
   try {
-    res = await fetch(`${base}/api/sync`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}`, "user-agent": `smallprint-cli/${VERSION}` }, body: JSON.stringify({ label, items: payload, prune: flag("prune"), files: fileUpload.files, scopes: fileUpload.scopes, firewalls, scheduled: flag("scheduled"), ...(flag("scheduled") && opt("every") ? { every: Math.round(Number(opt("every")) * 3600) } : {}) }), signal: TIMEOUT() });
+    res = await fetch(`${base}/api/sync`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}`, "user-agent": `smallprint-cli/${VERSION}` }, body: JSON.stringify({ label, items: payload, prune: flag("prune"), files: fileUpload.files, scopes: fileUpload.scopes, ...(fileUpload.formerScopes ? { formerScopes: fileUpload.formerScopes } : {}), firewalls, scheduled: flag("scheduled"), ...(flag("scheduled") && opt("every") ? { every: Math.round(Number(opt("every")) * 3600) } : {}) }), signal: TIMEOUT() });
   } catch (err) {
     console.error(`Could not reach ${base} (${(err as Error).message}). Check your connection or proxy and try again.`);
     return 1;
@@ -557,7 +576,9 @@ async function sync(): Promise<number> {
     since: string | null;
     where?: string[];
   }
-  const r = (await res.json()) as { pinned: number; created: number; dropped: number; unknown: { name: string; host: string; reason: string }[]; files?: { recorded: number; firstSeen: FileChange[]; changed: FileChange[]; removed: FileChange[]; returned: FileChange[]; limited: { pathHash: string; kind: string; reason: string }[] } };
+  const r = (await res.json()) as { rekeyed?: number; pinned: number; created: number; dropped: number; unknown: { name: string; host: string; reason: string }[]; files?: { recorded: number; firstSeen: FileChange[]; changed: FileChange[]; removed: FileChange[]; returned: FileChange[]; limited: { pathHash: string; kind: string; reason: string }[] } };
+  // a server that answers with "rekeyed" has moved this label's record to the keyed hashes: the unkeyed ones are never sent again
+  if (migrate && typeof r.rekeyed === "number") writeState({ ...readState(), keyedLabels: [...new Set([...(readState().keyedLabels ?? []), keyedId])] });
   const summary = `Pinned ${r.pinned} (${r.created} new${r.dropped ? `, ${r.dropped} dropped` : ""}).`;
   const problems = r.unknown.map((u) => `  not pinned: ${u.name} (${u.host}): ${u.reason}`);
   const where = (c: FileChange) => (c.where ? `  in: ${c.where.length ? c.where.join(", ") : "formatting only"}` : "");
@@ -671,6 +692,8 @@ async function scheduleSystem(): Promise<number> {
     if (paths.timer) rmSync(paths.timer, { force: true });
     rmSync(paths.helper, { force: true });
     rmSync(paths.token, { force: true });
+    rmSync(join(paths.tokenDir, "salt"), { force: true });
+    rmSync(join(paths.tokenDir, "keyed-labels"), { force: true });
     if (plat === "linux") {
       try {
         execFileSync("systemctl", ["daemon-reload"], { stdio: "ignore" });
@@ -734,7 +757,27 @@ async function scheduleSystem(): Promise<number> {
   writeFileSync(paths.token, token + "\n", { mode: 0o600 });
   chownSync(paths.token, 0, 0);
   chmodSync(paths.token, 0o600);
-  for (const p of [paths.dir, paths.helper, paths.tokenDir, paths.token]) {
+  // the salt (security audit item 36): the account's own, when it is a plain file the account owns, so the root reporter's
+  // hashes match the ones sync sent from this account; otherwise a new one for the root reporter only. Never written into
+  // the account's home from here, because a root write there could follow a link the account planted.
+  const saltPath = join(paths.tokenDir, "salt");
+  let salt: string | undefined;
+  try {
+    const own = saltFile(join(userHome, ".config"));
+    const lst = lstatSync(own);
+    if (lst.isFile() && lst.uid === statSync(userHome).uid) {
+      const s = readFileSync(own, "utf8").trim();
+      if (SALT_SHAPE.test(s)) salt = s;
+    }
+  } catch {
+    salt = undefined;
+  }
+  if (!salt) salt = existsSync(saltPath) ? machineSalt(false, saltPath) : undefined;
+  if (!salt) salt = (await import("node:crypto")).randomBytes(32).toString("hex");
+  writeFileSync(saltPath, salt + "\n", { mode: 0o600 });
+  chownSync(saltPath, 0, 0);
+  chmodSync(saltPath, 0o600);
+  for (const p of [paths.dir, paths.helper, paths.tokenDir, paths.token, saltPath]) {
     if (!rootOnly(p)) {
       console.error(`${p} ended up writable by someone other than root; refusing to load the job. Check the ownership of its parent folders.`);
       return 2;
@@ -879,7 +922,7 @@ async function schedule(): Promise<number> {
 /**
  * `smallprint gate` (decision 145): the pre-session check. Every server this machine runs is looked up on the record,
  * and the command exits non-zero when the small print of an installed version changed since the lock, or when an
- * advisory names an installed version. One request per server, names and versions only, nothing else sent. Made for
+ * advisory's range covers an installed version. One request per server, the registry name only, nothing else sent. Made for
  * a shell hook or a launcher: `smallprint gate && claude`.
  */
 async function gate(): Promise<number> {
@@ -920,13 +963,18 @@ async function gate(): Promise<number> {
     const sinceRow = since ? e.versions.find((v) => v.version === since) : undefined;
     const changedSince = sinceRow ? e.releases.filter((r) => !r.identical && (r.publishedAt ?? "") > (sinceRow.publishedAt ?? "")) : [];
     const worst = changedSince.reduce((w, r) => (RANK_ORDER.indexOf(r.worst) > RANK_ORDER.indexOf(w) ? r.worst : w), "info");
-    const adv = e.advisories.filter((a) => a.severity === "critical" || a.severity === "high");
+    // an advisory counts only when its range covers the installed version; an unreadable range or an unknown version is said plainly and counted as unknown
+    const adv = advisoriesForVersion(e.advisories, installed);
     const line = [`${cn}${installed ? ` @ ${installed}` : ""}`];
-    if (!sinceRow) { line.push(since ? `version ${since} not read on the record` : "no version to compare"); unknown++; }
+    let unknownHere = false;
+    if (!sinceRow) { line.push(since ? `version ${since} not read on the record` : "no version to compare"); unknownHere = true; }
     else if (changedSince.length) { line.push(`small print changed in ${changedSince.length} release(s) since ${since}, worst ${worst}`); changed++; }
     else line.push(`unchanged since ${since}`);
-    if (adv.length) { line.push(`${adv.length} high or critical advisory(ies): ${adv.map((a) => a.id).join(", ")}`); advisories++; }
-    console.log(`  ${changedSince.length || adv.length ? "!" : sinceRow ? "ok" : "?"}  ${line.join("; ")}  ${e.asset.url}`);
+    line.push(...advisoryWords(adv, installed));
+    if (adv.applies.length) advisories++;
+    if (adv.rangeUnknown.length) unknownHere = true;
+    if (unknownHere) unknown++;
+    console.log(`  ${changedSince.length || adv.applies.length ? "!" : sinceRow && !unknownHere ? "ok" : "?"}  ${line.join("; ")}  ${e.asset.url}`);
   }
   const bad = changed + advisories + (strict ? unknown : 0);
   console.log(bad ? `Gate: ${changed} changed, ${advisories} with advisories, ${unknown} unknown. Exit ${changed || (strict && unknown) ? 2 : 3}.` : `Gate: clear. ${items.length} server(s), ${unknown} unknown.`);
@@ -955,7 +1003,7 @@ async function show(): Promise<number> {
   }
   if (res.status === 404) { console.log(`${spec}: not in the catalog. It gets a trust page on the next catalog pass if a registry lists it.`); return 1; }
   if (!res.ok) { console.error(`${url} answered ${res.status}`); return 1; }
-  const j = (await res.json()) as { asset: { canonicalName: string; displayName: string; kind: string; registry: string; description: string | null }; baseline: { version: string; publishedAt: string | null } | null; tools: unknown[] | null; remoteRead: { checkedAt: string; status: string; toolCount: number | null } | null; advisories: { id: string; severity: string; summary: string }[]; releases: { from: string; to: string; publishedAt: string | null; worst: string | null; identical: boolean; summary: string }[]; url?: string };
+  const j = (await res.json()) as { asset: { canonicalName: string; displayName: string; kind: string; registry: string; description: string | null; url?: string }; baseline: { version: string; publishedAt: string | null } | null; tools: unknown[] | null; remoteRead: { checkedAt: string; status: string; toolCount: number | null } | null; advisories: { id: string; severity: string; summary: string }[]; releases: { from: string; to: string; publishedAt: string | null; worst: string | null; identical: boolean; summary: string }[]; url?: string };
   console.log(`${j.asset.displayName}  (${j.asset.kind} on ${j.asset.registry})`);
   if (j.asset.description) console.log(`  ${j.asset.description.replace(/\s+/g, " ").slice(0, 160)}`);
   if (j.baseline) console.log(`  baseline ${j.baseline.version}${j.baseline.publishedAt ? `, published ${j.baseline.publishedAt.slice(0, 10)}` : ""}${j.tools ? `, ${j.tools.length} tools read` : ", small print not read yet"}`);
@@ -966,12 +1014,10 @@ async function show(): Promise<number> {
     console.log(`  last ${rel.length} release${rel.length === 1 ? "" : "s"}:`);
     for (const r of rel) console.log(`    ${r.from} -> ${r.to}${r.publishedAt ? `  ${r.publishedAt.slice(0, 10)}` : ""}  ${r.identical ? "identical small print" : `${r.worst ?? "graded"}: ${r.summary.replace(/\s+/g, " ").slice(0, 90)}`}`);
   }
-  console.log(`  ${base}${pathFor(j.asset.canonicalName)}`);
+  // the page's own address as the site writes it (one rule on the site, decision 205), not a copy of that rule here:
+  // the copy wrote a scope's "@" as "%40" after the site changed to "@" (full audit of 29 Sep 2026)
+  if (j.asset.url) console.log(`  ${j.asset.url}`);
   return 0;
-}
-function pathFor(canonicalName: string): string {
-  const i = canonicalName.indexOf(":");
-  return `/a/${canonicalName.slice(0, i)}/${canonicalName.slice(i + 1).split("/").map(encodeURIComponent).join("/")}`;
 }
 
 if (cmd === "check") {
@@ -994,7 +1040,7 @@ if (cmd === "check") {
 usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--base <url>]
        smallprint lock [--project] [--file smallprint.lock]   write what this machine runs, and its instruction-file hashes, to a file you commit; --project keeps to this directory
        smallprint check --locked [--project] [--file ...]      compare with the lock, exit 2 when anything changed; local only, works offline, made for CI
-       smallprint gate [--project] [--strict]                  ask the record about every server here: exit 2 when a small print changed since the lock, 3 when a high advisory names one; for a shell hook before a session
+       smallprint gate [--project] [--strict]                  ask the record about every server here: exit 2 when a small print changed since the lock, 3 when a high advisory covers the installed version; for a shell hook before a session
        smallprint sync --label "work laptop" [--yes] [--prune] [--dry-run] [--base <url>]   (SMALLPRINT_TOKEN=sp_...)
        smallprint schedule --install --label "work laptop" [--every 6] | --status | --uninstall
        sudo --preserve-env=PATH,SMALLPRINT_TOKEN smallprint schedule --install --system --label "work laptop"   (level four: a root-owned reporter the agent cannot reach)

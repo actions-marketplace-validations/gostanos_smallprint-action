@@ -101,7 +101,7 @@ export function describeAdvisories(e: Entry, version: string | undefined): strin
   return out.join("\n");
 }
 
-/** Yes or no: has the small print moved since a version, a content hash or a date the caller approved? (decision 137) */
+/** Yes or no: has the small print changed since a version, a content hash or a date the caller approved? (decision 137) */
 export function describeApproval(e: Entry, approved: string): string {
   const a = e.asset;
   const latest = e.baseline;
@@ -116,7 +116,7 @@ export function describeApproval(e: Entry, approved: string): string {
   const same = isDate ? rel.length === 0 : v!.contentHash === latest.contentHash;
   const head = same
     ? `UNCHANGED: the small print of ${a.displayName} is the same as ${isDate ? `on ${day(since)}` : isHash ? "the approved hash" : `version ${approved}`}; latest ${latest.version}, content hash ${latest.contentHash}.`
-    : `CHANGED: the small print of ${a.displayName} moved since ${isDate ? day(since) : isHash ? "the approved hash" : `version ${approved}`}. Latest ${latest.version}, content hash ${latest.contentHash}. ${rel.length} release(s) changed it; worst grade ${worstOf(rel)}.`;
+    : `CHANGED: the small print of ${a.displayName} changed since ${isDate ? day(since) : isHash ? "the approved hash" : `version ${approved}`}. Latest ${latest.version}, content hash ${latest.contentHash}. ${rel.length} release(s) changed it; worst grade ${worstOf(rel)}.`;
   const lines = [head];
   for (const r of rel.slice(0, 6)) lines.push(`  ${r.from ?? "first read"} -> ${r.to} (${day(r.publishedAt)}), worst ${r.worst}: ${r.summary}`);
   if (rel.length > 6) lines.push(`  ${rel.length - 6} more at ${a.url}`);
@@ -137,7 +137,7 @@ const result = <T,>(textOut: string, structured: T) => ({ content: [{ type: "tex
 const errorResult = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], structuredContent: { error: msg }, isError: true });
 
 export function buildServer(): McpServer {
-  const server = new McpServer({ name: "smallprint", version: "0.2.2" }, { instructions: "Small Print keeps a public, dated record of the tool descriptions, schemas and instructions (the small print) of MCP servers, agent skills and plugins, hashed every version and diffed between versions, with every change graded by a printed rule and public advisories joined by version. Use these tools before installing or trusting a server or skill, or when a user asks whether one changed. Start with lookup_entry when you know nothing about an entry; use changed_since_approval when a version, hash or date was already reviewed; changes_since for the diffs themselves; advisories_for for the advisories. Facts only: every advisory is attributed to its source and nothing is called malicious." });
+  const server = new McpServer({ name: "smallprint", version: "0.2.4" }, { instructions: "Small Print keeps a public, dated record of the tool descriptions, schemas and instructions (the small print) of MCP servers, agent skills and plugins, hashed every version and diffed between versions, with every change graded by a printed rule and public advisories joined by version. Use these tools before installing or trusting a server or skill, or when a user asks whether one changed. Start with lookup_entry when you know nothing about an entry; use changed_since_approval when a version, hash or date was already reviewed; changes_since for the diffs themselves; advisories_for for the advisories. Facts only: every advisory is attributed to its source and nothing is called malicious." });
   server.registerTool(
     "lookup_entry",
     {
@@ -159,7 +159,7 @@ export function buildServer(): McpServer {
     "changes_since",
     {
       title: "Changes to an entry's small print",
-      description: `The releases of one entry whose tool descriptions, schemas or instructions changed, each with its diff, its grade and the rule that graded it (rules at ${BASE}/how-we-grade). Use it to read what actually changed, after lookup_entry or changed_since_approval said something did; use changed_since_approval instead when the question is only whether anything moved since an approved version. Filters: since keeps releases published on or after a date; min_severity drops changes below a grade (default low, so plain version bumps and identical releases are never listed). Returns at most 12 releases in text; the structured result carries all of them. ${BEHAVIOUR}`,
+      description: `The releases of one entry whose tool descriptions, schemas or instructions changed, each with its diff, its grade and the rule that graded it (rules at ${BASE}/how-we-grade). Use it to read what actually changed, after lookup_entry or changed_since_approval said something did; use changed_since_approval instead when the question is only whether anything changed since an approved version. Filters: since keeps releases published on or after a date; min_severity drops changes below a grade (default low, so plain version bumps and identical releases are never listed). Returns at most 12 releases in text; the structured result carries all of them. ${BEHAVIOUR}`,
       inputSchema: {
         name: z.string().min(1).max(300).describe(NAME_DESC),
         since: z.string().regex(/^\d{4}-\d{2}-\d{2}/).optional().describe("ISO date, YYYY-MM-DD; only releases published on or after it. Omit for every release on record."),
@@ -200,7 +200,7 @@ export function buildServer(): McpServer {
     "changed_since_approval",
     {
       title: "Has the small print changed since it was approved?",
-      description: `Yes or no, before using a server or skill: has its small print moved since the version, content hash or date that was reviewed? The answer opens with UNCHANGED, CHANGED or UNKNOWN, then the releases that changed it since and their worst grade, then whether the review can stand. Use it on every run when an approval is on file, instead of re-reading the tools; use lookup_entry when nothing was approved yet and changes_since to read the diffs after a CHANGED answer. UNKNOWN means the approved version is not on record or its small print was never read, so nothing is compared; treat it as no answer, not as safe. ${BEHAVIOUR}`,
+      description: `Yes or no, before using a server or skill: has its small print changed since the version, content hash or date that was reviewed? The answer opens with UNCHANGED, CHANGED or UNKNOWN, then the releases that changed it since and their worst grade, then whether the review can stand. Use it on every run when an approval is on file, instead of re-reading the tools; use lookup_entry when nothing was approved yet and changes_since to read the diffs after a CHANGED answer. UNKNOWN means the approved version is not on record or its small print was never read, so nothing is compared; treat it as no answer, not as safe. ${BEHAVIOUR}`,
       inputSchema: {
         name: z.string().min(1).max(300).describe(NAME_DESC),
         approved: z.string().min(1).max(120).describe("What was reviewed: a version string exactly as published (1.4.2), the 64-character hex content hash from an earlier answer, or an ISO date YYYY-MM-DD. A date compares against releases published after it."),

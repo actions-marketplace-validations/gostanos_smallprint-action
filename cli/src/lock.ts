@@ -21,6 +21,8 @@ export interface LockItem {
   name: string;
   canonicalName: string | null;
   version: string | null;
+  /** For a hosted server: the host it is reached at, name and port only (tools audit of 29 Sep 2026, fix 11). Locks written before 0.1.6 have none, and then it is not compared. */
+  remoteHost?: string;
   /** For skills: the SKILL.md hash and the hash over every file. */
   skillMdSha256?: string;
   treeSha256?: string;
@@ -88,7 +90,7 @@ export function buildLock(items: readonly UploadItem[], files: readonly Instruct
   // a project lock keeps only the files under the working directory; the items were filtered with projectItems before they lost their paths
   const keptFiles = scope === "project" ? files.filter((f) => f.scope === "project" && underProject(f.path, cwd)) : files;
   const lockItems: LockItem[] = items
-    .map((i) => ({ kind: i.kind, host: i.host, name: i.name, canonicalName: i.canonicalName ?? null, version: i.version ?? null, ...(i.skillMdSha256 ? { skillMdSha256: i.skillMdSha256 } : {}), ...(i.treeSha256 ? { treeSha256: i.treeSha256 } : {}) }))
+    .map((i) => ({ kind: i.kind, host: i.host, name: i.name, canonicalName: i.canonicalName ?? null, version: i.version ?? null, ...(i.remoteHost ? { remoteHost: i.remoteHost } : {}), ...(i.skillMdSha256 ? { skillMdSha256: i.skillMdSha256 } : {}), ...(i.treeSha256 ? { treeSha256: i.treeSha256 } : {}) }))
     .sort((a, b) => itemKey(a).localeCompare(itemKey(b)));
   const lockFiles: LockFileEntry[] = keptFiles.map((f) => ({ path: displayPath(f.path, home, cwd), kind: f.kind, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path));
   return { version: LOCK_VERSION, written: now.toISOString(), scope, items: lockItems, files: lockFiles };
@@ -118,6 +120,8 @@ export function diffLock(lock: Lockfile, current: Lockfile): LockDiff {
     const what: string[] = [];
     if ((before.version ?? null) !== (after.version ?? null)) what.push(`version ${before.version ?? "none"} -> ${after.version ?? "none"}`);
     if ((before.canonicalName ?? null) !== (after.canonicalName ?? null)) what.push(`identity ${before.canonicalName ?? "none"} -> ${after.canonicalName ?? "none"}`);
+    // a lock from before hosts were kept has no remoteHost: nothing to compare, so no change is claimed
+    if (before.remoteHost !== undefined && before.remoteHost !== (after.remoteHost ?? undefined)) what.push(`host ${before.remoteHost} -> ${after.remoteHost ?? "none"}`);
     if (before.skillMdSha256 !== after.skillMdSha256) what.push("SKILL.md changed");
     else if (before.treeSha256 !== after.treeSha256) what.push("skill files changed");
     if (what.length) out.changed.push({ before, after, what: what.join(", ") });
@@ -135,7 +139,7 @@ export function diffLock(lock: Lockfile, current: Lockfile): LockDiff {
 
 export function formatDiff(d: LockDiff): string[] {
   const lines: string[] = [];
-  const label = (i: LockItem) => `${i.name} (${i.host}${i.version ? `, ${i.version}` : ""})`;
+  const label = (i: LockItem) => `${i.name} (${i.host}${i.version ? `, ${i.version}` : ""}${i.remoteHost ? `, at ${i.remoteHost}` : ""})`;
   for (const c of d.changed) lines.push(`  CHANGED  ${label(c.before)}: ${c.what}`);
   for (const i of d.added) lines.push(`  ADDED    ${label(i)}: not in the lock`);
   for (const i of d.removed) lines.push(`  GONE     ${label(i)}: in the lock, not on this machine`);

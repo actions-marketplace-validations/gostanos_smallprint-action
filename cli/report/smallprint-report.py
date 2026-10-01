@@ -15,6 +15,7 @@ code running as root is this file and the system interpreter.
 import argparse
 import datetime
 import hashlib
+import hmac
 import json
 import os
 import pwd
@@ -76,10 +77,102 @@ def locations(home: str, cwd: str):
         (j(home, ".cursor", "mcp.json"), "cursor", "Cursor MCP servers, home", "home", "mcp-json"),
         (j(cwd, ".cursor", "mcp.json"), "cursor", "Cursor MCP servers, project", "project", "mcp-json"),
         (j(home, ".codeium", "windsurf", "mcp_config.json"), "windsurf", "Windsurf MCP servers, home", "home", "mcp-json"),
+    ]
+    L += mcp_extra_locations(home, cwd)
+    L += [
         (j(home, ".codex", "config.toml"), "codex", "Codex config.toml, home", "home", None),
     ]
     L += openclaw(j(home, ".openclaw", "workspace")) + openclaw(j(home, "clawd"))
     L.append((j(home, ".openclaw", "openclaw.json"), "openclaw", "OpenClaw config, home", "home", None))
+    L += plugin_locations(home)
+    return L
+
+
+def vscode_base(home):
+    j = os.path.join
+    return j(os.environ.get("APPDATA", j(home, "AppData", "Roaming")), "Code", "User") if sys.platform == "win32" else j(home, "Library", "Application Support", "Code", "User")
+
+
+def mcp_extra_locations(home, cwd):
+    """VS Code, Cline and Roo MCP configs, as the node CLI lists them after the Windsurf one (tools audit of 29 Sep 2026, fix 10)."""
+    j = os.path.join
+    g = lambda ext, f: j(vscode_base(home), "globalStorage", ext, "settings", f)
+    return [
+        (j(cwd, ".vscode", "mcp.json"), "vscode", "VS Code MCP servers, project", "project", "mcp-json"),
+        (j(vscode_base(home), "mcp.json"), "vscode", "VS Code MCP servers, home", "home", "mcp-json"),
+        (g("saoudrizwan.claude-dev", "cline_mcp_settings.json"), "cline", "Cline MCP servers, home", "home", "mcp-json"),
+        (g("rooveterinaryinc.roo-cline", "mcp_settings.json"), "roo", "Roo MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".roo", "mcp.json"), "roo", "Roo MCP servers, project", "project", "mcp-json"),
+    ]
+
+
+PLUGINS_MAX = 50
+
+
+def inside_home(path, home, owner_uid=None):
+    try:
+        real = os.path.realpath(path)
+        base = os.path.realpath(home)
+        if real != base and not real.startswith(base + os.sep):
+            return False
+        return owner_uid is None or os.lstat(path).st_uid == owner_uid
+    except Exception:
+        return False
+
+
+def installed_plugins(home):
+    """Claude Code plugins from ~/.claude/plugins/installed_plugins.json, the same list the node CLI reads (plugins.ts):
+    only an install folder inside the user's home is read, so a line in that file cannot point root at the rest of the disk."""
+    try:
+        with open(os.path.join(home, ".claude", "plugins", "installed_plugins.json"), "rb") as f:
+            doc = json.loads(f.read().decode("utf-8", "replace"))
+    except Exception:
+        return []
+    plugins = doc.get("plugins") if isinstance(doc, dict) else None
+    if not isinstance(plugins, dict):
+        return []
+    try:
+        owner_uid = os.stat(home).st_uid
+    except Exception:
+        owner_uid = -1
+    out, seen = [], set()
+    for key in sorted(plugins):
+        raw = plugins[key]
+        records = raw if isinstance(raw, list) else [raw]
+        name = key.split("@")[0] or key
+        for r in records:
+            p = r.get("installPath") if isinstance(r, dict) else None
+            if not isinstance(p, str) or not p:
+                continue
+            root = os.path.abspath(p)
+            if root in seen or not os.path.isdir(root) or os.path.islink(root) or not inside_home(root, home, owner_uid):
+                continue
+            seen.add(root)
+            out.append((name, root))
+            if len(out) >= PLUGINS_MAX:
+                return out
+    return out
+
+
+def manifest_has_servers(root):
+    try:
+        with open(os.path.join(root, ".claude-plugin", "plugin.json"), "rb") as f:
+            m = json.loads(f.read().decode("utf-8", "replace")).get("mcpServers")
+        return isinstance(m, dict)
+    except Exception:
+        return False
+
+
+def plugin_locations(home):
+    j = os.path.join
+    L = []
+    for _name, root in installed_plugins(home):
+        L.append((j(root, ".mcp.json"), "claude-code", "Claude Code plugin MCP servers, home", "home", "mcp-json"))
+        if manifest_has_servers(root):
+            L.append((j(root, ".claude-plugin", "plugin.json"), "claude-code", "Claude Code plugin MCP servers, home", "home", "mcp-json"))
+        L.append((j(root, "hooks", "hooks.json"), "claude-code", "Claude Code plugin hooks, home", "home", None))
+        L.append((j(root, "commands"), "claude-code", "Claude Code plugin command, home", "home", "dir"))
+        L.append((j(root, "agents"), "claude-code", "Claude Code plugin agent definition, home", "home", "dir"))
     return L
 
 
@@ -96,7 +189,19 @@ def dumps(v) -> str:
     return json.dumps(v, separators=(",", ":"), ensure_ascii=False)
 
 
-def mcp_digest(text: str):
+def is_bare_server_map(j) -> bool:
+    """A plugin's .mcp.json: no wrapper key, and every value a server definition (parse.ts isBareServerMap)."""
+    if not isinstance(j, dict) or any(k in j for k in ("mcpServers", "servers", "context_servers", "projects")) or not j:
+        return False
+    return all(isinstance(v, dict) and any(isinstance(v.get(k), str) for k in ("command", "url", "serverUrl")) for v in j.values())
+
+
+def keyed_hash(key: str, kind: str, value: str) -> str:
+    """HMAC-SHA256 under the machine's salt, the same as keyedHash in instructions.ts (security audit item 36)."""
+    return hmac.new(bytes.fromhex(key), f"{kind}\0{value}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def mcp_digest(text: str, key=None):
     try:
         j = json.loads(text)
     except Exception:
@@ -112,13 +217,16 @@ def mcp_digest(text: str):
             if isinstance(d, dict):
                 d = dict(d)
                 if isinstance(d.get("env"), dict):
-                    d["env"] = {k: f"sha256:{sha256_text(str(v))}" for k, v in d["env"].items()}
+                    d["env"] = {k: (f"hmac:{keyed_hash(key, 'env', str(v))}" if key else f"sha256:{sha256_text(str(v))}") for k, v in d["env"].items()}
             servers[prefix + name] = canon(d)
 
+    if is_bare_server_map(j):
+        take(j, "")
     take(j.get("mcpServers"), "")
+    take(j.get("servers"), "")
     if isinstance(j.get("projects"), dict):
         for path, p in j["projects"].items():
-            take(p.get("mcpServers") if isinstance(p, dict) else None, f"project:{sha256_text(path)[:12]}/")
+            take(p.get("mcpServers") if isinstance(p, dict) else None, f"project:{(keyed_hash(key, 'project', path) if key else sha256_text(path))[:12]}/")
     sections = {name: sha256_text(dumps(d)) for name, d in servers.items()}
     return sha256_text(dumps(canon(servers))), sections
 
@@ -133,22 +241,40 @@ def section_hashes(text: str):
     return {k: sha256_text(dumps(v)) for k, v in j.items()}
 
 
-IMPORT_RE = re.compile(r"(?:^|\s)@((?:~/|\.{1,2}/|/)[^\s\"'`)]+)")
+IMPORT_RE = re.compile(r"(?:^|\s)@([^\s\"'`)]+)")
 
 
 def claude_imports(text: str, from_dir: str, home: str):
     out = []
+
+    def at(r):
+        return os.path.join(home, r[2:]) if r.startswith("~/") else (r if r.startswith("/") else os.path.normpath(os.path.join(from_dir, r)))
+
     for m in IMPORT_RE.finditer(text):
         raw = m.group(1)
-        p = os.path.join(home, raw[2:]) if raw.startswith("~/") else (raw if raw.startswith("/") else os.path.normpath(os.path.join(from_dir, raw)))
-        if p not in out:
+        p = None
+        if raw.startswith(("~/", "./", "../", "/")):
+            p = at(raw)
+        else:
+            # a bare relative path (@README, @docs/x.md) counts only when it names a file that exists (instructions.ts claudeImports)
+            for r in (raw, re.sub(r"[.,;:!?]+$", "", raw)):
+                if not r or r.startswith("@"):
+                    continue
+                c = at(r)
+                try:
+                    if S.S_ISREG(os.lstat(c).st_mode):
+                        p = c
+                        break
+                except OSError:
+                    pass
+        if p and p not in out:
             out.append(p)
         if len(out) >= IMPORT_MAX:
             break
     return out
 
 
-def read_one(path, host, kind, scope, mode, imported=False):
+def read_one(path, host, kind, scope, mode, imported=False, key=None):
     st = os.lstat(path)
     if not S.S_ISREG(st.st_mode) or st.st_size > FILE_MAX:
         return None
@@ -158,7 +284,11 @@ def read_one(path, host, kind, scope, mode, imported=False):
         d = mcp_digest(buf.decode("utf-8", "replace"))
         if not d:
             return None
-        return {"path": path, "host": host, "kind": kind, "scope": scope, "sha256": d[0], "sections": d[1]}
+        out = {"path": path, "host": host, "kind": kind, "scope": scope, "sha256": d[0], "sections": d[1]}
+        if key:
+            k = mcp_digest(buf.decode("utf-8", "replace"), key)
+            out["keyed"] = {"sha256": k[0], "sections": k[1]}
+        return out
     out = {"path": path, "host": host, "kind": kind, "scope": scope, "sha256": sha256(buf)}
     # an imported file is hashed whole: no per-key hashes for text whose path the import author chose
     if not imported and path.endswith(".json"):
@@ -182,7 +312,7 @@ def import_allowed(path, home, owner_uid):
         return False
 
 
-def read_files(home, cwd):
+def read_files(home, cwd, key=None):
     out, seen = [], set()
     try:
         owner_uid = os.stat(home).st_uid
@@ -223,8 +353,8 @@ def read_files(home, cwd):
                 for name in sorted(os.listdir(path))[:DIR_MAX_FILES]:
                     if name.startswith("."):
                         continue
-                    push(read_one(os.path.join(path, name), host, kind, scope, None))
-            elif push(read_one(path, host, kind, scope, mode)):
+                    push(read_one(os.path.join(path, name), host, kind, scope, None, key=key))
+            elif push(read_one(path, host, kind, scope, mode, key=key)):
                 follow(path, host, kind, scope, 1)
         except Exception:
             pass
@@ -234,6 +364,8 @@ def read_files(home, cwd):
 def read_skills(home, cwd):
     items = []
     roots = [(os.path.join(home, ".claude", "skills"), "claude-code"), (os.path.join(cwd, ".claude", "skills"), "claude-code"), (os.path.join(home, ".openclaw", "skills"), "openclaw"), (os.path.join(home, "clawd", "skills"), "openclaw")]
+    # the skills of each installed Claude Code plugin, after the others, as the node CLI reads them (tools audit of 29 Sep 2026, fix 2)
+    roots += [(os.path.join(root, "skills"), "claude-code") for _name, root in installed_plugins(home)]
     seen = set()
     for root, host in roots:
         if root in seen or not os.path.isdir(root) or os.path.islink(root):
@@ -264,6 +396,45 @@ def read_skills(home, cwd):
     return items
 
 
+def read_salt(path):
+    try:
+        with open(path) as fh:
+            s = fh.read().strip()
+        return s if re.fullmatch(r"[0-9a-f]{64}", s) else None
+    except Exception:
+        return None
+
+
+def read_keyed_labels(path):
+    try:
+        with open(path) as fh:
+            j = json.load(fh)
+        return [x for x in j if isinstance(x, str)] if isinstance(j, list) else []
+    except Exception:
+        return []
+
+
+def write_keyed_labels(path, labels):
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(sorted(set(labels)), fh)
+    except Exception:
+        pass
+
+
+def file_upload(f, key, migrate):
+    """One file as sync sends it (toFileUpload in instructions.ts): keyed with the salt when there is one; on the first keyed
+    report for a label, the unkeyed hashes it was recorded under ride along once so the server can move the record."""
+    content = f["keyed"] if key and "keyed" in f else {"sha256": f["sha256"], **({"sections": f["sections"]} if "sections" in f else {})}
+    out = {"pathHash": keyed_hash(key, "path", f["path"]) if key else sha256_text(f["path"]), "kind": f["kind"], "host": f["host"], "scope": "home", "sha256": content["sha256"], **({"sections": content["sections"]} if "sections" in content else {})}
+    if key and migrate:
+        out["formerPathHash"] = sha256_text(f["path"])
+        if "keyed" in f:
+            out["formerSha256"] = f["sha256"]
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--user", required=True)
@@ -274,16 +445,21 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--home", help="read this directory instead of the account's home (tests)")
+    ap.add_argument("--salt-file", default="/etc/smallprint/salt", help="the root-owned copy of the machine's salt, written by schedule --install --system")
+    ap.add_argument("--keyed-file", default="/etc/smallprint/keyed-labels", help="labels whose record already moved to keyed hashes")
     a = ap.parse_args()
     if not (a.base.startswith("https://") or a.base.startswith("http://localhost") or a.base.startswith("http://127.0.0.1")):
         sys.exit("refusing a non-https base")
     home = a.home or pwd.getpwnam(a.user).pw_dir
-    files = read_files(home, home)
+    key = read_salt(a.salt_file)
+    keyed_labels = read_keyed_labels(a.keyed_file)
+    migrate = bool(key) and a.label not in keyed_labels
+    files = read_files(home, home, key)
     items = read_skills(home, home)
-    upload = [{"pathHash": sha256_text(f["path"]), "kind": f["kind"], "host": f["host"], "scope": "home", "sha256": f["sha256"], **({"sections": f["sections"]} if "sections" in f else {})} for f in files if f["scope"] == "home"]
+    upload = [file_upload(f, key, migrate) for f in files if f["scope"] == "home"]
     body = {"label": a.label, "items": items, "files": upload, "scopes": ["home"], "scheduled": True, "every": int(a.every * 3600), "reporter": "system"}
     if a.json:
-        print(dumps({"files": [{"path": f["path"], "kind": f["kind"], "sha256": f["sha256"], **({"sections": f["sections"]} if "sections" in f else {})} for f in files], "items": items}))
+        print(dumps({"files": [{"path": f["path"], "kind": f["kind"], "sha256": f["sha256"], **({"sections": f["sections"]} if "sections" in f else {})} for f in files], "items": items, "upload": upload}))
         return
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if a.dry_run:
@@ -298,6 +474,9 @@ def main():
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             res = json.loads(r.read().decode())
+        # a server that answers with "rekeyed" moved this label's record to the keyed hashes: the unkeyed ones are not sent again
+        if migrate and isinstance(res.get("rekeyed"), int):
+            write_keyed_labels(a.keyed_file, keyed_labels + [a.label])
     except urllib.error.HTTPError as e:
         # the server's one line says why (a token revoked, a plan without the scheduled run); print it, not just the status
         try:

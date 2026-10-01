@@ -6,11 +6,12 @@
  * the only baseline is this machine's last run. Hashes are kept in the local
  * state file and nothing here is ever uploaded.
  */
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { Host } from "./parse";
+import { isBareServerMap, type Host } from "./parse";
+import { installedPlugins, manifestHasServers, pluginManifestPath } from "./plugins";
 
 export interface InstructionLocation {
   host: Host;
@@ -34,6 +35,8 @@ export interface InstructionFile {
   bytes: number;
   /** For JSON settings files: a hash per top-level section, so a change can be named. */
   sections?: Record<string, string>;
+  /** For MCP configs read with the machine's salt: the digest with env values and project paths keyed, which is what sync sends. */
+  keyed?: { sha256: string; sections: Record<string, string> };
 }
 
 export interface InstructionRecord {
@@ -90,11 +93,47 @@ export function instructionLocations(home = homedir(), cwd = process.cwd()): Ins
     { host: "cursor", path: join(home, ".cursor", "mcp.json"), kind: "Cursor MCP servers, home", scope: "home", digest: "mcp-json" },
     { host: "cursor", path: join(cwd, ".cursor", "mcp.json"), kind: "Cursor MCP servers, project", scope: "project", digest: "mcp-json" },
     { host: "windsurf", path: join(home, ".codeium", "windsurf", "mcp_config.json"), kind: "Windsurf MCP servers, home", scope: "home", digest: "mcp-json" },
+    // VS Code, Cline and Roo (tools audit of 29 Sep 2026, fix 10): check listed their servers and the lock never hashed them
+    { host: "vscode", path: join(cwd, ".vscode", "mcp.json"), kind: "VS Code MCP servers, project", scope: "project", digest: "mcp-json" },
+    { host: "vscode", path: vscodeUserMcp(home), kind: "VS Code MCP servers, home", scope: "home", digest: "mcp-json" },
+    { host: "cline", path: vscodeGlobalStorage(home, "saoudrizwan.claude-dev", "cline_mcp_settings.json"), kind: "Cline MCP servers, home", scope: "home", digest: "mcp-json" },
+    { host: "roo", path: vscodeGlobalStorage(home, "rooveterinaryinc.roo-cline", "mcp_settings.json"), kind: "Roo MCP servers, home", scope: "home", digest: "mcp-json" },
+    { host: "roo", path: join(cwd, ".roo", "mcp.json"), kind: "Roo MCP servers, project", scope: "project", digest: "mcp-json" },
     { host: "codex", path: join(home, ".codex", "config.toml"), kind: "Codex config.toml, home", scope: "home" },
     ...openclaw(join(home, ".openclaw", "workspace")),
     ...openclaw(join(home, "clawd")),
     { host: "openclaw", path: join(home, ".openclaw", "openclaw.json"), kind: "OpenClaw config, home", scope: "home" },
+    ...pluginLocations(home),
   ];
+}
+
+const appDataOf = (home: string) => process.env.APPDATA ?? join(home, "AppData", "Roaming");
+
+/** VS Code's user mcp.json. */
+export function vscodeUserMcp(home = homedir()): string {
+  return process.platform === "win32" ? join(appDataOf(home), "Code", "User", "mcp.json") : join(home, "Library", "Application Support", "Code", "User", "mcp.json");
+}
+
+/** A file in a VS Code extension's global storage settings folder (Cline, Roo). */
+export function vscodeGlobalStorage(home: string, extension: string, file: string): string {
+  return process.platform === "win32" ? join(appDataOf(home), "Code", "User", "globalStorage", extension, "settings", file) : join(home, "Library", "Application Support", "Code", "User", "globalStorage", extension, "settings", file);
+}
+
+/**
+ * What each installed Claude Code plugin gives the agent (tools audit of 29 Sep 2026, fix 2): its MCP servers (.mcp.json,
+ * in the plugin's bare-map shape, or inline in plugin.json), its hooks, its commands and its agent definitions. The kind
+ * labels name no plugin: the server sees "Claude Code plugin hooks, home", never which plugin.
+ */
+export function pluginLocations(home = homedir()): InstructionLocation[] {
+  const out: InstructionLocation[] = [];
+  for (const p of installedPlugins(home)) {
+    out.push({ host: "claude-code", path: join(p.root, ".mcp.json"), kind: "Claude Code plugin MCP servers, home", scope: "home", digest: "mcp-json" });
+    if (manifestHasServers(p.root)) out.push({ host: "claude-code", path: pluginManifestPath(p.root), kind: "Claude Code plugin MCP servers, home", scope: "home", digest: "mcp-json" });
+    out.push({ host: "claude-code", path: join(p.root, "hooks", "hooks.json"), kind: "Claude Code plugin hooks, home", scope: "home" });
+    out.push({ host: "claude-code", path: join(p.root, "commands"), kind: "Claude Code plugin command, home", scope: "home", dir: true });
+    out.push({ host: "claude-code", path: join(p.root, "agents"), kind: "Claude Code plugin agent definition, home", scope: "home", dir: true });
+  }
+  return out;
 }
 
 /**
@@ -103,8 +142,15 @@ export function instructionLocations(home = homedir(), cwd = process.cwd()): Ins
  * URL or a secret changes, and the text hashed never contains the secret.
  * ~/.claude.json keeps per-project servers under projects.<path>.mcpServers;
  * those are folded in under "project:<hash of path>" so paths never appear.
+ *
+ * With a key (the machine's salt, decision in the security audit of 29 Sep 2026, item 36), every env value and every
+ * project path is hashed with HMAC under that key instead of plain SHA-256, so a row on smallprint.dev cannot be used to
+ * confirm a guessed secret or a guessed folder name. The lock and the local baseline use the digest without a key, so a
+ * committed lock still compares equal on another machine; only what sync sends is keyed.
  */
-export function mcpServersDigest(text: string): { sha256: string; sections: Record<string, string> } | null {
+export function mcpServersDigest(text: string, key?: string): { sha256: string; sections: Record<string, string> } | null {
+  const valueHash = (kind: "env" | "project", v: string) => (key ? `hmac:${keyedHash(key, kind, v)}` : `sha256:${sha256(Buffer.from(v))}`);
+  const projectPrefix = (path: string) => `project:${(key ? keyedHash(key, "project", path) : sha256(Buffer.from(path))).slice(0, 12)}/`;
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -125,19 +171,32 @@ export function mcpServersDigest(text: string): { sha256: string; sections: Reco
       const d = def && typeof def === "object" ? { ...(def as Record<string, unknown>) } : def;
       if (d && typeof d === "object" && (d as Record<string, unknown>).env && typeof (d as Record<string, unknown>).env === "object") {
         const env = (d as Record<string, unknown>).env as Record<string, unknown>;
-        (d as Record<string, unknown>).env = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, `sha256:${sha256(Buffer.from(String(v)))}`]));
+        (d as Record<string, unknown>).env = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, valueHash("env", String(v))]));
       }
       servers[prefix + name] = canon(d);
     }
   };
+  // a plugin's .mcp.json is the bare map; VS Code keeps its servers under "servers" (tools audit of 29 Sep 2026, fixes 2
+  // and 10). Before this, both hashed as an empty object, so a changed server in either never showed.
+  if (isBareServerMap(j)) take(j, "");
   take(j.mcpServers, "");
-  if (j.projects && typeof j.projects === "object") for (const [path, p] of Object.entries(j.projects as Record<string, { mcpServers?: unknown }>)) take(p?.mcpServers, `project:${sha256(Buffer.from(path)).slice(0, 12)}/`);
+  take(j.servers, "");
+  if (j.projects && typeof j.projects === "object") for (const [path, p] of Object.entries(j.projects as Record<string, { mcpServers?: unknown }>)) take(p?.mcpServers, projectPrefix(path));
   const sections: Record<string, string> = {};
   for (const [name, def] of Object.entries(servers)) sections[name] = sha256(Buffer.from(JSON.stringify(def)));
   return { sha256: sha256(Buffer.from(JSON.stringify(canon(servers)))), sections };
 }
 
 const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+
+/**
+ * HMAC-SHA256 under the machine's salt (64 hex characters, kept in ~/.config/smallprint/salt and never sent). The kind
+ * goes in front of the value, so a path hash can never be mistaken for an env hash of the same text. The Python reporter
+ * computes the same (keyed_hash in report/smallprint-report.py).
+ */
+export function keyedHash(key: string, kind: "path" | "scope" | "env" | "project", value: string): string {
+  return createHmac("sha256", Buffer.from(key, "hex")).update(`${kind}\0${value}`).digest("hex");
+}
 
 /**
  * A settings file is one document with several jobs: hooks (commands the agent
@@ -161,14 +220,15 @@ export function sectionHashes(text: string): Record<string, string> | undefined 
 }
 
 /** Hash one regular file; symbolic links and oversized files are skipped. An imported file is hashed whole: no per-key hashes for text the import author chose. */
-function readOne(loc: InstructionLocation, path: string, imported = false): InstructionFile | null {
+function readOne(loc: InstructionLocation, path: string, imported = false, key?: string): InstructionFile | null {
   const st = lstatSync(path);
   if (!st.isFile() || st.size > FILE_MAX_BYTES) return null;
   const buf = readFileSync(path);
   if (loc.digest === "mcp-json") {
     const d = mcpServersDigest(buf.toString("utf8"));
     if (!d) return null;
-    return { host: loc.host, path, kind: loc.kind, scope: loc.scope, sha256: d.sha256, bytes: st.size, sections: d.sections };
+    const k = key ? mcpServersDigest(buf.toString("utf8"), key) : null;
+    return { host: loc.host, path, kind: loc.kind, scope: loc.scope, sha256: d.sha256, bytes: st.size, sections: d.sections, ...(k ? { keyed: { sha256: k.sha256, sections: k.sections } } : {}) };
   }
   const file: InstructionFile = { host: loc.host, path, kind: loc.kind, scope: loc.scope, sha256: sha256(buf), bytes: st.size };
   if (!imported && path.endsWith(".json")) {
@@ -189,18 +249,37 @@ const IMPORT_DEPTH = 3;
  */
 export function claudeImports(text: string, fromDir: string, home: string): string[] {
   const out: string[] = [];
-  const re = /(?:^|\s)@((?:~\/|\.{1,2}\/|\/)[^\s"'`)]+)/g;
+  const re = /(?:^|\s)@([^\s"'`)]+)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) && out.length < IMPORT_MAX) {
     const raw = m[1]!;
-    const p = raw.startsWith("~/") ? join(home, raw.slice(2)) : raw.startsWith("/") ? raw : resolve(fromDir, raw);
-    if (!out.includes(p)) out.push(p);
+    const marked = raw.startsWith("~/") || raw.startsWith("./") || raw.startsWith("../") || raw.startsWith("/");
+    const at = (r: string) => (r.startsWith("~/") ? join(home, r.slice(2)) : r.startsWith("/") ? r : resolve(fromDir, r));
+    let p: string | null = marked ? at(raw) : null;
+    if (!marked) {
+      // a bare relative path, the form Claude Code's own docs use (@README, @docs/git-instructions.md), counts only when it
+      // names a file that exists, so "@someone" in prose is not an import (tools audit of 29 Sep 2026, fix 5); a full stop or
+      // comma after it at the end of a sentence is not part of the name
+      for (const r of [raw, raw.replace(/[.,;:!?]+$/, "")]) {
+        if (!r || r.startsWith("@")) continue;
+        const c = at(r);
+        try {
+          if (lstatSync(c).isFile()) {
+            p = c;
+            break;
+          }
+        } catch {
+          /* not a file here */
+        }
+      }
+    }
+    if (p && !out.includes(p)) out.push(p);
   }
   return out;
 }
 
 /** Every instruction file that exists on this machine, in a stable order. */
-export function readInstructionFiles(home = homedir(), cwd = resolve(process.cwd()), errors: string[] = []): InstructionFile[] {
+export function readInstructionFiles(home = homedir(), cwd = resolve(process.cwd()), errors: string[] = [], key?: string): InstructionFile[] {
   const out: InstructionFile[] = [];
   const seen = new Set<string>();
   const push = (f: InstructionFile | null) => {
@@ -239,9 +318,9 @@ export function readInstructionFiles(home = homedir(), cwd = resolve(process.cwd
         const names = readdirSync(loc.path).sort().slice(0, DIR_MAX_FILES);
         for (const name of names) {
           if (name.startsWith(".")) continue;
-          push(readOne(loc, join(loc.path, name)));
+          push(readOne(loc, join(loc.path, name), false, key));
         }
-      } else if (push(readOne(loc, loc.path))) {
+      } else if (push(readOne(loc, loc.path, false, key))) {
         followImports(loc, loc.path, 1);
       }
     } catch (err) {
@@ -315,18 +394,43 @@ export interface FileUpload {
   scope: string;
   sha256: string;
   sections?: Record<string, string>;
+  /**
+   * Sent once per machine label, on the first keyed sync (see toFileUpload): the unkeyed path hash and, for an MCP config,
+   * the unkeyed digest this file was recorded under before, so the server can move its record to the keyed hash.
+   */
+  formerPathHash?: string;
+  formerSha256?: string;
 }
 
-export const pathHash = (path: string): string => sha256(Buffer.from(path));
+/** The hash of a path: HMAC under the machine's salt when there is one, plain SHA-256 (what 0.1.5 and earlier sent) without. */
+export const pathHash = (path: string, key?: string): string => (key ? keyedHash(key, "path", path) : sha256(Buffer.from(path)));
 /** A project scope is the working directory's hash, so a sync from another directory never reports this one's files removed. */
-export const projectScope = (cwd: string): string => `project:${sha256(Buffer.from(resolve(cwd))).slice(0, 12)}`;
+export const projectScope = (cwd: string, key?: string): string => `project:${(key ? keyedHash(key, "scope", resolve(cwd)) : sha256(Buffer.from(resolve(cwd)))).slice(0, 12)}`;
 
-export function toFileUpload(files: InstructionFile[], cwd = process.cwd()): { files: FileUpload[]; scopes: string[] } {
+export interface FileUploadSet {
+  files: FileUpload[];
+  scopes: string[];
+  /** On the first keyed sync only: each keyed project scope with the unkeyed one it replaces. */
+  formerScopes?: Record<string, string>;
+}
+
+/**
+ * What sync sends for the instruction files. With a key, every path hash, project scope and MCP digest is keyed with the
+ * machine's salt (security audit of 29 Sep 2026, item 36; tools audit fix 8), so a row cannot confirm a guessed user
+ * name, folder or secret. `migrate` is set on the first keyed sync for a machine label: each file then also carries the
+ * unkeyed hashes it was recorded under, once, so the record keeps its history instead of reading every file as removed
+ * and new. The server uses them only to find the old row and keeps none of them.
+ */
+export function toFileUpload(files: InstructionFile[], cwd = process.cwd(), key?: string, migrate = false): FileUploadSet {
   const scopes = new Set<string>(["home"]);
+  const formerScopes: Record<string, string> = {};
   const out: FileUpload[] = files.map((f) => {
-    const scope = f.scope === "home" ? "home" : projectScope(cwd);
+    const scope = f.scope === "home" ? "home" : projectScope(cwd, key);
     scopes.add(scope);
-    return { pathHash: pathHash(f.path), kind: f.kind, host: f.host, scope, sha256: f.sha256, ...(f.sections ? { sections: f.sections } : {}) };
+    if (key && migrate && scope !== "home") formerScopes[scope] = projectScope(cwd);
+    const content = key && f.keyed ? f.keyed : { sha256: f.sha256, sections: f.sections };
+    const former = key && migrate ? { formerPathHash: pathHash(f.path), ...(f.keyed ? { formerSha256: f.sha256 } : {}) } : {};
+    return { pathHash: pathHash(f.path, key), kind: f.kind, host: f.host, scope, sha256: content.sha256, ...(content.sections ? { sections: content.sections } : {}), ...former };
   });
-  return { files: out, scopes: [...scopes] };
+  return { files: out, scopes: [...scopes], ...(Object.keys(formerScopes).length ? { formerScopes } : {}) };
 }

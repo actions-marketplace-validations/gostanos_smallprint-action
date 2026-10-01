@@ -3,21 +3,16 @@
   "name": "dev.smallprint/smallprint",
   "description": "The small print of MCP servers, skills and plugins, hashed, diffed and graded, from the record.",
   "websiteUrl": "https://smallprint.dev",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "smallprint-mcp",
-      "version": "0.2.2",
+      "version": "0.2.4",
       "transport": {
         "type": "stdio"
       }
     }
-  ],
-  "repository": {
-    "url": "https://github.com/gostanos/smallprint-action",
-    "source": "github",
-    "subfolder": "mcp"
-  }
+  ]
 }
