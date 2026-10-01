@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { evaluateLocal, evaluateServer, notifies, type RecordEntry } from "../src/core";
+import { DEFAULT_BASE, evaluateLocal, evaluateServer, notifies, safeBase, userSetting, type Inspected, type RecordEntry } from "../src/core";
+import { readFileSync } from "node:fs";
 import { inRange as extRange } from "../src/range";
 import { inRange as siteRange } from "../../../apps/web/src/lib/tie";
 
@@ -65,5 +66,31 @@ describe("the version-range rule is the site's", () => {
   it("answers exactly as apps/web/src/lib/tie.ts does", () => {
     const cases: [string, string][] = [["0.1.15", ">=0.0.5 <0.1.16"], ["0.1.16", ">=0.0.5 <0.1.16"], ["2025.7.2", "<=0.6.2 || >=2025.1.14 <2025.7.1"], ["1.0.0", "*"], ["1.0.0", "garbage"], ["v2.0.0-beta", ">=2.0.0"], ["3", "=3.0.0"]];
     for (const [v, r] of cases) expect(extRange(v, r)).toBe(siteRange(v, r));
+  });
+});
+
+describe("a repository cannot turn the lookup on or move it (security audit item 40, tools audit fix 7)", () => {
+  it("marks lookup and baseUrl as application settings, and the base as https only", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string; contributes: { configuration: { properties: Record<string, { scope?: string; pattern?: string }> } } };
+    const props = pkg.contributes.configuration.properties;
+    expect(props["smallprint.lookup"]!.scope).toBe("application");
+    expect(props["smallprint.baseUrl"]!.scope).toBe("application");
+    expect(props["smallprint.baseUrl"]!.pattern).toBe("^https://");
+    // the version the extension says in its requests is the package's
+    expect(readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8")).toContain(`const VERSION = "${pkg.version}";`);
+  });
+
+  it("reads the user's own value and ignores a workspace's", () => {
+    expect(userSetting({ defaultValue: "ask", globalValue: undefined, workspaceValue: "allow" } as Inspected<string>, "ask")).toBe("ask");
+    expect(userSetting({ defaultValue: "ask", globalValue: "never" }, "ask")).toBe("never");
+    expect(userSetting(undefined, "ask")).toBe("ask");
+  });
+
+  it("uses https only, with no credentials, and falls back to smallprint.dev", () => {
+    expect(safeBase("https://smallprint.dev/")).toBe("https://smallprint.dev");
+    expect(safeBase("http://anyone.example")).toBe(DEFAULT_BASE);
+    expect(safeBase("https://user:pw@anyone.example")).toBe(DEFAULT_BASE);
+    expect(safeBase("javascript:alert(1)")).toBe(DEFAULT_BASE);
+    expect(safeBase("https://mirror.example/record")).toBe("https://mirror.example/record");
   });
 });

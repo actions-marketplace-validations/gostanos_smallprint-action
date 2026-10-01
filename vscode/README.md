@@ -18,6 +18,8 @@ Nothing, until you allow the lookup. After that, one request per MCP server that
 
 ## Settings
 
+The lookup setting and the record's address are read only from your user settings. A repository's settings cannot turn the lookup on or send it anywhere else, and the address must use https.
+
 - `smallprint.lookup`: `ask` (the default), `allow` or `never`.
 - `smallprint.notify`: `high` (the default) pops a notice for changed instruction files and skills, advisories, and changes graded high or critical; `any` for every graded change; `none` to only list them in the panel.
 - `smallprint.checkEveryHours`: how often to check the record, 6 by default.
