@@ -14,4 +14,4 @@ claude plugin marketplace add gostanos/smallprint-action
 claude plugin install smallprint@smallprint
 ```
 
-The commands run `smallprint@0.1.5` from npm, pinned, so the plugin never runs a version of the command you have not read. Small Print is at https://smallprint.dev, and the command's full guide is at https://smallprint.dev/cli.
+The commands run `smallprint@0.1.6` from npm, pinned, so the plugin never runs a version of the command you have not read. Small Print is at https://smallprint.dev, and the command's full guide is at https://smallprint.dev/cli.

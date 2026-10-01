@@ -140,6 +140,6 @@ describe("MCP config digests", () => {
     const files = readInstructionFiles(home, cwd);
     const cfg = files.find((f) => f.kind === "Claude Code MCP servers, home")!;
     expect(cfg.sections).toEqual({ fs: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    expect(instructionLocations("/h", "/p").filter((l) => l.digest === "mcp-json").length).toBe(6);
+    expect(instructionLocations("/h", "/p").filter((l) => l.digest === "mcp-json").length).toBe(11); // Desktop, Claude Code x2, Cursor x2, Windsurf, and since 29 Sep 2026 VS Code x2, Cline, Roo x2
   });
 });

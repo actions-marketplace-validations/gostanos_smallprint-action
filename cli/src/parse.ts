@@ -119,8 +119,23 @@ export function inferPackage(command: string | undefined, args: readonly string[
     return { canonicalName: `pypi:${a[1].toLowerCase().replace(/[-_.]+/g, "-")}`, version: null, transport: "stdio" };
   }
   if (cmd === "docker" && a[0] === "run") {
-    // the image is the first argument that looks like repo/image[:tag]; anything after it is the container command
-    const image = a.slice(1).find((x) => /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)+(:[A-Za-z0-9._-]+)?$/.test(x) && !x.startsWith("/") && !x.startsWith("."));
+    // the image is the first argument that is not an option or an option's value; anything after it is the container
+    // command. The value after --env-file, -v or --mount is a path on this machine and is never taken for the image
+    // (security audit of 29 Sep 2026, item 35: `--env-file config/prod.env` was sent as oci:config/prod.env).
+    const valued = new Set(["-e", "--env", "--env-file", "-v", "--volume", "--mount", "--name", "--network", "--net", "-w", "--workdir", "--entrypoint", "-l", "--label", "--label-file", "-p", "--publish", "-u", "--user", "--pull", "--platform", "-m", "--memory", "--cpus", "--add-host", "--cap-add", "--cap-drop", "--device", "--dns", "-h", "--hostname", "--ipc", "--log-driver", "--log-opt", "--restart", "--runtime", "--security-opt", "--shm-size", "--stop-signal", "--tmpfs", "--ulimit", "--gpus", "--expose", "--cidfile", "--volumes-from", "--link", "--pid", "--uts", "--userns", "--group-add", "--health-cmd", "--mac-address", "--ip", "--ip6", "--storage-opt", "--sysctl", "--cgroup-parent", "--cgroupns", "--isolation", "--detach-keys", "--annotation", "--attach", "-a"]);
+    let positional: string | undefined;
+    const rest = a.slice(1);
+    for (let i = 0; i < rest.length; i++) {
+      const x = rest[i]!;
+      if (valued.has(x)) {
+        i++;
+        continue;
+      }
+      if (x.startsWith("-")) continue;
+      positional = x;
+      break;
+    }
+    const image = positional && /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)+(:[A-Za-z0-9._-]+)?$/.test(positional) && !positional.startsWith("/") && !positional.startsWith(".") ? positional : undefined;
     if (image) {
       const [name, version] = image.includes(":") ? [image.slice(0, image.lastIndexOf(":")), image.slice(image.lastIndexOf(":") + 1)] : [image, null];
       return { canonicalName: `oci:${name}`, version: cleanVersion(version), transport: "stdio" };
@@ -161,13 +176,30 @@ function serverFromEntry(host: Host, name: string, entry: Record<string, unknown
   return { kind: "mcp", host, name, configPath, transport, canonicalName: inferred.canonicalName, version: inferred.version, remoteHost, hygiene: envHygiene(entry, configPath) };
 }
 
-export function parseClaudeJson(text: string, host: Host, configPath: string): DiscoveredServer[] {
+/**
+ * A Claude Code plugin's .mcp.json is a bare map of servers, with no mcpServers key around it (tools audit of 29 Sep
+ * 2026, fix 2). A document counts as one only when it has none of the wrapper keys and every value is a server
+ * definition: an object with a command, a url or a serverUrl. A settings file with any other top-level value is not.
+ */
+export function isBareServerMap(j: unknown): j is Record<string, Record<string, unknown>> {
+  if (!j || typeof j !== "object" || Array.isArray(j)) return false;
+  const o = j as Record<string, unknown>;
+  if ("mcpServers" in o || "servers" in o || "context_servers" in o || "projects" in o) return false;
+  const values = Object.values(o);
+  return values.length > 0 && values.every((v) => v !== null && typeof v === "object" && !Array.isArray(v) && (typeof (v as Record<string, unknown>).command === "string" || typeof (v as Record<string, unknown>).url === "string" || typeof (v as Record<string, unknown>).serverUrl === "string"));
+}
+
+export function parseClaudeJson(text: string, host: Host, configPath: string, namePrefix = ""): DiscoveredServer[] {
   const j = JSON.parse(text) as Record<string, unknown>;
   const out: DiscoveredServer[] = [];
   const take = (map: unknown) => {
     if (!map || typeof map !== "object") return;
-    for (const [name, entry] of Object.entries(map as Record<string, unknown>)) if (entry && typeof entry === "object") out.push(serverFromEntry(host, name, entry as Record<string, unknown>, configPath));
+    for (const [name, entry] of Object.entries(map as Record<string, unknown>)) if (entry && typeof entry === "object") out.push(serverFromEntry(host, namePrefix + name, entry as Record<string, unknown>, configPath));
   };
+  if (isBareServerMap(j)) {
+    take(j);
+    return out;
+  }
   take(j.mcpServers);
   // VS Code keeps them under "servers", Zed under "context_servers" (decision 143)
   take(j.servers);

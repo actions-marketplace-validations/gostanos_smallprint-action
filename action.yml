@@ -12,7 +12,7 @@ inputs:
   version:
     description: "smallprint CLI version to run"
     required: false
-    default: "0.1.5"
+    default: "0.1.6"
   sarif:
     description: "Path to write a SARIF 2.1.0 log of what changed, for a code-scanning upload (empty: none)"
     required: false
@@ -22,4 +22,17 @@ runs:
   steps:
     - name: Compare this checkout with the lock
       shell: bash
-      run: npx -y smallprint@${{ inputs.version }} check --locked --file "${{ inputs.lockfile }}" --no-upload --no-signup ${{ inputs.sarif != '' && format('--sarif "{0}"', inputs.sarif) || '' }}
+      # the inputs reach the shell as environment variables, never pasted into the script, so a value can only ever be
+      # an argument (security audit of 29 Sep 2026, item 45); the version must look like a version
+      env:
+        SP_LOCKFILE: ${{ inputs.lockfile }}
+        SP_VERSION: ${{ inputs.version }}
+        SP_SARIF: ${{ inputs.sarif }}
+      run: |
+        if ! [[ "$SP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.-]+)?$ ]]; then
+          echo "version must be a version number such as 0.1.5" >&2
+          exit 2
+        fi
+        args=(check --locked --file "$SP_LOCKFILE" --no-upload --no-signup)
+        if [ -n "$SP_SARIF" ]; then args+=(--sarif "$SP_SARIF"); fi
+        npx -y "smallprint@$SP_VERSION" "${args[@]}"

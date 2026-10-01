@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync, lstatSync, existsSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
+import { installedPlugins, manifestHasServers, pluginManifestPath } from "./plugins";
 import { parseClaudeJson as parseJsonPure, parseCodexToml as parseTomlPure, type Discovered, type DiscoveredServer, type DiscoveredSkill, type Host } from "./parse";
 
 
@@ -64,9 +65,9 @@ function fileModeHygiene(configPath: string): string[] {
   return [];
 }
 
-export function parseClaudeJson(text: string, host: Host, configPath: string): DiscoveredServer[] {
+export function parseClaudeJson(text: string, host: Host, configPath: string, namePrefix = ""): DiscoveredServer[] {
   const extra = fileModeHygiene(configPath);
-  return parseJsonPure(text, host, configPath).map((s) => withCachedVersion({ ...s, hygiene: [...s.hygiene, ...extra] }));
+  return parseJsonPure(text, host, configPath, namePrefix).map((s) => withCachedVersion({ ...s, hygiene: [...s.hygiene, ...extra] }));
 }
 
 export function parseCodexToml(text: string, configPath: string): DiscoveredServer[] {
@@ -86,6 +87,11 @@ export interface ConfigLocation {
   host: Host;
   path: string;
   format: "claude-json" | "cursor-json" | "codex-toml" | "skills-dir";
+}
+
+/** Roo Code's MCP settings in VS Code's global storage, beside Cline's. */
+export function rooHomeSettings(home = homedir(), win = platform() === "win32", appData = process.env.APPDATA ?? join(home, "AppData", "Roaming")): string {
+  return win ? join(appData, "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json") : join(home, "Library", "Application Support", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json");
 }
 
 /** Everything we look for, in order. Paths are best effort per docs/SOURCES.md. */
@@ -116,6 +122,8 @@ export function configLocations(home = homedir(), cwd = process.cwd()): ConfigLo
     { host: "windsurf", path: join(cwd, ".windsurf", "mcp.json"), format: "cursor-json" },
     { host: "cline", path: win ? join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json") : join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"), format: "claude-json" },
     { host: "roo", path: join(cwd, ".roo", "mcp.json"), format: "claude-json" },
+    // Roo's home settings (tools audit of 29 Sep 2026, fix 10): the README said gate reads them and nothing did
+    { host: "roo", path: rooHomeSettings(home, win, appData), format: "claude-json" },
     { host: "openclaw", path: join(home, ".openclaw", "skills"), format: "skills-dir" },
     { host: "openclaw", path: join(home, "clawd", "skills"), format: "skills-dir" },
     { host: "hermes", path: join(home, ".hermes", "skills"), format: "skills-dir" },
@@ -226,6 +234,32 @@ export function discover(opts: DiscoverOptions = {}): DiscoveryResult {
       else items.push(...parseClaudeJson(text, loc.host, loc.path));
     } catch (err) {
       errors.push({ path: loc.path, error: (err as Error).message });
+    }
+  }
+  // Claude Code plugins (tools audit of 29 Sep 2026, fix 2): each plugin's servers, named as Claude Code names them
+  // (plugin:<plugin>:<server>), and its skills
+  for (const plugin of installedPlugins(home)) {
+    const mcp = join(plugin.root, ".mcp.json");
+    const manifest = pluginManifestPath(plugin.root);
+    for (const [path, inline] of [[mcp, false], [manifest, true]] as const) {
+      if (!existsSync(path) || (inline && !manifestHasServers(plugin.root))) continue;
+      try {
+        const text = readFileSync(path, "utf8");
+        const json = inline ? JSON.stringify({ mcpServers: (JSON.parse(text) as { mcpServers: unknown }).mcpServers }) : text;
+        items.push(...parseClaudeJson(json, "claude-code", path, `plugin:${plugin.name}:`));
+        read.push(path);
+      } catch (err) {
+        errors.push({ path, error: (err as Error).message });
+      }
+    }
+    const skillsRoot = join(plugin.root, "skills");
+    if (existsSync(skillsRoot) && !seen.has(resolve(skillsRoot))) {
+      seen.add(resolve(skillsRoot));
+      const skillErrors: string[] = [];
+      const skills = readSkillsDir("claude-code", skillsRoot, skillErrors);
+      for (const e of skillErrors) errors.push({ path: skillsRoot, error: e });
+      if (skills.length) read.push(skillsRoot);
+      items.push(...skills);
     }
   }
   return { items, read, errors };
