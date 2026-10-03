@@ -12,17 +12,19 @@ import { z } from "zod";
 const BASE = (process.env.SMALLPRINT_BASE_URL ?? "https://smallprint.dev").replace(/\/$/, "");
 const UA = "smallprint-mcp/0.1 (+https://smallprint.dev)";
 
-interface Change { field: string; subject: string | null; severity: string; severityRule: string; diff: string }
+interface Change { field: string; subject: string | null; severity: string; severityRule: string; note?: string; diff: string }
 interface Release { from: string | null; to: string; publishedAt: string | null; worst: string; identical: boolean; summary: string; changes: Change[] }
 interface Advisory { id: string; aliases: string[]; severity: string; severityRule: string; criterion: string; summary: string; attribution: string | null; source: string; published: string | null; versionRange: string | null; url: string }
 interface Entry {
   asset: { canonicalName: string; displayName: string; kind: string; registry: string; description: string | null; sourceUrl: string | null; repoUrl: string | null; maintainer: string | null; installCount: number | null; latestVersion: string | null; inCatalogSince: string | null; url: string };
-  baseline: { version: string; publishedAt: string | null; contentHash: string | null; treeHash: string | null } | null;
+  /** "tools", "no-tools" (read, none declared), "oversize" or "unread"; absent from servers older than 2 Oct 2026. */
+  readState?: string;
+  baseline: { version: string; publishedAt: string | null; read?: boolean; contentHash: string | null; treeHash: string | null } | null;
   tools: { name: string; description?: string; inputSchema?: unknown }[] | null;
   skillMd: string | null;
   advisories: Advisory[];
   releases: Release[];
-  versions: { version: string; publishedAt: string | null; contentHash: string | null; treeHash: string | null }[];
+  versions: { version: string; publishedAt: string | null; read?: boolean; contentHash: string | null; treeHash: string | null }[];
   notice: string;
 }
 
@@ -67,7 +69,7 @@ export function describeEntry(e: Entry): string {
     `${a.displayName} (${a.canonicalName}), a ${a.kind} on ${a.registry}. Record: ${a.url}`,
     a.description ? `Registry description: ${a.description}` : null,
     `${e.versions.length} version(s) on record; latest ${a.latestVersion ?? "unknown"}${a.installCount != null ? `; ${a.installCount.toLocaleString("en-US")} installs (${a.registry})` : ""}.`,
-    e.tools ? `${e.tools.length} tool(s) read from the pinned version: ${e.tools.slice(0, 40).map((t) => t.name).join(", ")}${e.tools.length > 40 ? ", …" : ""}.` : e.skillMd ? "SKILL.md read from the pinned version." : "The small print of this entry has not been read yet.",
+    e.tools ? `${e.tools.length} tool(s) read from the pinned version: ${e.tools.slice(0, 40).map((t) => t.name).join(", ")}${e.tools.length > 40 ? ", …" : ""}.` : e.skillMd ? "SKILL.md read from the pinned version." : e.readState === "no-tools" ? "The pinned version was read and declares no tools of its own; a server like this builds or relays its tool list at run time." : "The small print of this entry has not been read yet.",
     e.releases.length ? `${e.releases.length} release(s) diffed; worst change graded ${worstOf(e.releases)}.` : "No release has been diffed yet.",
     e.advisories.length ? `${e.advisories.length} advisory(ies) name it: ${e.advisories.map((v) => `${v.id} (${v.severity}, ${v.source})`).join("; ")}.` : "No advisory on record names it.",
     a.repoUrl ? `Source: ${a.repoUrl}` : null,
@@ -88,7 +90,7 @@ export function describeChanges(e: Entry, since: string | undefined, minSeverity
   const out = [`${e.asset.displayName}: ${rel.length} release(s)${since ? ` since ${day(since)}` : ""} changed the small print (grade ${minSeverity} or above). Each grade prints its rule; the rules are at ${BASE}/how-we-grade.`];
   for (const r of rel.slice(0, 12)) {
     out.push(`\n${r.from ?? "first read"} -> ${r.to} (${day(r.publishedAt)}), worst ${r.worst}: ${r.summary}`);
-    for (const c of r.changes.filter((c) => (RANK[c.severity] ?? 0) >= floor).slice(0, 8)) out.push(`  [${c.severity}] ${c.field}${c.subject ? ` ${c.subject}` : ""} (${c.severityRule})\n    ${c.diff.split("\n").slice(0, 6).join("\n    ")}`);
+    for (const c of r.changes.filter((c) => (RANK[c.severity] ?? 0) >= floor).slice(0, 8)) out.push(`  [${c.severity}] ${c.field}${c.subject ? ` ${c.subject}` : ""} (${c.severityRule}${c.note ? `. ${c.note}` : ""})\n    ${c.diff.split("\n").slice(0, 6).join("\n    ")}`);
   }
   if (rel.length > 12) out.push(`\n${rel.length - 12} more release(s) at ${e.asset.url}`);
   return out.join("\n");
@@ -108,9 +110,9 @@ export function describeApproval(e: Entry, approved: string): string {
   const isHash = /^[0-9a-f]{64}$/i.test(approved);
   const isDate = /^\d{4}-\d{2}-\d{2}/.test(approved);
   const v = isHash ? e.versions.find((x) => x.contentHash?.toLowerCase() === approved.toLowerCase()) : isDate ? undefined : e.versions.find((x) => x.version === approved);
-  if (!latest?.contentHash) return `UNKNOWN: the small print of ${a.displayName} has not been read yet, so nothing can be compared. Record: ${a.url}`;
+  if (!latest?.contentHash) return latest?.read ? `UNKNOWN: ${a.displayName} ${latest.version} was read and declares no tools of its own, so there is no tool text to compare. Record: ${a.url}` : `UNKNOWN: the small print of ${a.displayName} has not been read yet, so nothing can be compared. Record: ${a.url}`;
   if (!isDate && !v) return `UNKNOWN: ${approved} is not a version or content hash on record for ${a.displayName}. Versions on record: ${e.versions.slice(0, 20).map((x) => x.version).join(", ")}${e.versions.length > 20 ? ", …" : ""}. Record: ${a.url}`;
-  if (!isDate && !v!.contentHash) return `UNKNOWN: version ${v!.version} of ${a.displayName} is on record but its small print was not read, so it cannot be compared with ${latest.version}. Record: ${a.url}`;
+  if (!isDate && !v!.contentHash) return v!.read ? `UNKNOWN: version ${v!.version} of ${a.displayName} was read and declares no tools of its own, so there is no tool text to compare with ${latest.version}. Record: ${a.url}` : `UNKNOWN: version ${v!.version} of ${a.displayName} is on record but its small print was not read, so it cannot be compared with ${latest.version}. Record: ${a.url}`;
   const since = isDate ? approved : (v!.publishedAt ?? "");
   const rel = e.releases.filter((r) => !r.identical && (r.publishedAt ?? "") > since);
   const same = isDate ? rel.length === 0 : v!.contentHash === latest.contentHash;
@@ -128,7 +130,7 @@ export function describeApproval(e: Entry, approved: string): string {
 /** Structured shapes returned beside the text, so a client can read a field without parsing prose. */
 const ADVISORY = z.object({ id: z.string(), severity: z.string(), source: z.string(), versionRange: z.string().nullable(), url: z.string() });
 const RELEASE = z.object({ from: z.string().nullable(), to: z.string(), publishedAt: z.string().nullable(), worst: z.string(), summary: z.string(), changes: z.array(z.object({ field: z.string(), subject: z.string().nullable(), severity: z.string(), rule: z.string(), diff: z.string() })) });
-const releaseOut = (r: Release) => ({ from: r.from, to: r.to, publishedAt: r.publishedAt, worst: r.worst, summary: r.summary, changes: r.changes.map((c) => ({ field: c.field, subject: c.subject, severity: c.severity, rule: c.severityRule, diff: c.diff })) });
+const releaseOut = (r: Release) => ({ from: r.from, to: r.to, publishedAt: r.publishedAt, worst: r.worst, summary: r.summary, changes: r.changes.map((c) => ({ field: c.field, subject: c.subject, severity: c.severity, rule: c.severityRule, ...(c.note ? { note: c.note } : {}), diff: c.diff })) });
 const advisoryOut = (a: Advisory) => ({ id: a.id, severity: a.severity, source: a.source, versionRange: a.versionRange, url: a.url });
 // every tool writes its four hints out in full, so a directory that reads the source without running it sees them (M8ven and OpenAI both check)
 const NAME_DESC = "The entry, with its registry prefix when known: npm:@scope/name, pypi:name, mcp-registry:io.github.owner/server, skills.sh:owner/repo/skill, oci:ghcr.io/owner/image. A bare name is read as an npm package. Case-sensitive, up to 300 characters.";
@@ -137,7 +139,7 @@ const result = <T,>(textOut: string, structured: T) => ({ content: [{ type: "tex
 const errorResult = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], structuredContent: { error: msg }, isError: true });
 
 export function buildServer(): McpServer {
-  const server = new McpServer({ name: "smallprint", version: "0.2.4" }, { instructions: "Small Print keeps a public, dated record of the tool descriptions, schemas and instructions (the small print) of MCP servers, agent skills and plugins, hashed every version and diffed between versions, with every change graded by a printed rule and public advisories joined by version. Use these tools before installing or trusting a server or skill, or when a user asks whether one changed. Start with lookup_entry when you know nothing about an entry; use changed_since_approval when a version, hash or date was already reviewed; changes_since for the diffs themselves; advisories_for for the advisories. Facts only: every advisory is attributed to its source and nothing is called malicious." });
+  const server = new McpServer({ name: "smallprint", version: "0.2.5" }, { instructions: "Small Print keeps a public, dated record of the tool descriptions, schemas and instructions (the small print) of MCP servers, agent skills and plugins, hashed every version and diffed between versions, with every change graded by a printed rule and public advisories joined by version. Use these tools before installing or trusting a server or skill, or when a user asks whether one changed. Start with lookup_entry when you know nothing about an entry; use changed_since_approval when a version, hash or date was already reviewed; changes_since for the diffs themselves; advisories_for for the advisories. Facts only: every advisory is attributed to its source and nothing is called malicious." });
   server.registerTool(
     "lookup_entry",
     {
