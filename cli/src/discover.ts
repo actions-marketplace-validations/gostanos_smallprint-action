@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync, lstatSync, existsSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
-import { installedPlugins, manifestHasServers, pluginManifestPath } from "./plugins";
+import { claudeCodePlugins, codexPlugins, copilotPlugins, manifestHasServers, pluginManifestPath, type InstalledPlugin } from "./plugins";
 import { parseClaudeJson as parseJsonPure, parseCodexToml as parseTomlPure, type Discovered, type DiscoveredServer, type DiscoveredSkill, type Host } from "./parse";
 
 
@@ -238,7 +238,8 @@ export function discover(opts: DiscoverOptions = {}): DiscoveryResult {
   }
   // Claude Code plugins (tools audit of 29 Sep 2026, fix 2): each plugin's servers, named as Claude Code names them
   // (plugin:<plugin>:<server>), and its skills
-  for (const plugin of installedPlugins(home)) {
+  // installed from a marketplace, synced from the Claude directory, or saved under skills/ (decision 370)
+  for (const plugin of claudeCodePlugins(home, cwd)) {
     const mcp = join(plugin.root, ".mcp.json");
     const manifest = pluginManifestPath(plugin.root);
     for (const [path, inline] of [[mcp, false], [manifest, true]] as const) {
@@ -257,6 +258,32 @@ export function discover(opts: DiscoverOptions = {}): DiscoveryResult {
       seen.add(resolve(skillsRoot));
       const skillErrors: string[] = [];
       const skills = readSkillsDir("claude-code", skillsRoot, skillErrors);
+      for (const e of skillErrors) errors.push({ path: skillsRoot, error: e });
+      if (skills.length) read.push(skillsRoot);
+      items.push(...skills);
+    }
+  }
+  // Codex and GitHub Copilot CLI plugins (decision 363): each plugin's servers and skills, under its own host, named as
+  // for Claude Code plugins. Codex keeps the servers in .mcp.json, Copilot in mcp.json
+  const others: [InstalledPlugin, Host, string][] = [
+    ...codexPlugins(home).map((p) => [p, "codex", ".mcp.json"] as [InstalledPlugin, Host, string]),
+    ...copilotPlugins(home).map((p) => [p, "copilot", "mcp.json"] as [InstalledPlugin, Host, string]),
+  ];
+  for (const [plugin, pluginHost, mcpFile] of others) {
+    const mcp = join(plugin.root, mcpFile);
+    if (existsSync(mcp)) {
+      try {
+        items.push(...parseClaudeJson(readFileSync(mcp, "utf8"), pluginHost, mcp, `plugin:${plugin.name}:`));
+        read.push(mcp);
+      } catch (err) {
+        errors.push({ path: mcp, error: (err as Error).message });
+      }
+    }
+    const skillsRoot = join(plugin.root, "skills");
+    if (existsSync(skillsRoot) && !seen.has(resolve(skillsRoot))) {
+      seen.add(resolve(skillsRoot));
+      const skillErrors: string[] = [];
+      const skills = readSkillsDir(pluginHost, skillsRoot, skillErrors);
       for (const e of skillErrors) errors.push({ path: skillsRoot, error: e });
       if (skills.length) read.push(skillsRoot);
       items.push(...skills);

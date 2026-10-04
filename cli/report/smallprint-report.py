@@ -154,6 +154,85 @@ def installed_plugins(home):
     return out
 
 
+def _manifest_name(root):
+    try:
+        with open(os.path.join(root, ".claude-plugin", "plugin.json"), "rb") as f:
+            n = json.loads(f.read().decode("utf-8", "replace")).get("name")
+        if isinstance(n, str) and re.match(r"^[\w.@-]{1,100}$", n):
+            return n
+    except Exception:
+        pass
+    return os.path.basename(root)
+
+
+def claude_plugins(home, cwd=None):
+    """Every Claude Code plugin, the same list as claudeCodePlugins in plugins.ts (decision 370): installed from a
+    marketplace, synced from claude.ai under ~/.claude/plugins/synced/ (any real folder up to three levels down holding
+    .claude-plugin/plugin.json), and saved under ~/.claude/skills/ or the project's .claude/skills/. Each folder once."""
+    cwd = cwd or home
+    try:
+        owner_uid = os.stat(home).st_uid
+    except Exception:
+        owner_uid = -1
+    out = list(installed_plugins(home))
+    is_plugin = lambda d: os.path.isfile(os.path.join(d, ".claude-plugin", "plugin.json"))
+    synced = os.path.join(home, ".claude", "plugins", "synced")
+    found = []
+
+    def walk(d, depth):
+        for c in _real_dirs(d):
+            if len(found) >= PLUGINS_MAX:
+                return
+            if is_plugin(c):
+                if inside_home(c, home, owner_uid):
+                    found.append((_manifest_name(c), c))
+            elif depth < 3:
+                walk(c, depth + 1)
+
+    if os.path.isdir(synced) and not os.path.islink(synced) and inside_home(synced, home, owner_uid):
+        walk(synced, 1)
+    out += found
+    skills = []
+    for base in (os.path.join(home, ".claude", "skills"), os.path.join(cwd, ".claude", "skills")):
+        for c in _real_dirs(base):
+            if is_plugin(c) and (inside_home(c, home, owner_uid) or os.path.realpath(c).startswith(os.path.realpath(cwd) + os.sep)):
+                skills.append((_manifest_name(c), c))
+            if len(skills) >= PLUGINS_MAX:
+                break
+    out += skills
+    seen, uniq = set(), []
+    for name, root in out:
+        k = os.path.abspath(root)
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append((name, root))
+    return uniq
+
+
+def mod_module_path(root):
+    """A mod's hooks module, as modModulePath in mods.ts: the first path in hooks/hooks.json "modules", relative to
+    hooks.json, a real file inside the plugin (decision 370)."""
+    hooks = os.path.join(root, "hooks", "hooks.json")
+    try:
+        with open(hooks, "rb") as f:
+            modules = json.loads(f.read().decode("utf-8", "replace")).get("modules")
+    except Exception:
+        return None
+    first = next((m for m in modules if isinstance(m, str) and m), None) if isinstance(modules, list) else None
+    if not first:
+        return None
+    path = os.path.abspath(os.path.join(os.path.dirname(hooks), first))
+    try:
+        real_root = os.path.realpath(root)
+        real = os.path.realpath(path)
+        if not (real == real_root or real.startswith(real_root + os.sep)) or not os.path.isfile(path) or os.path.islink(path):
+            return None
+    except Exception:
+        return None
+    return path
+
+
 def manifest_has_servers(root):
     try:
         with open(os.path.join(root, ".claude-plugin", "plugin.json"), "rb") as f:
@@ -163,16 +242,73 @@ def manifest_has_servers(root):
         return False
 
 
+def _real_dirs(d):
+    try:
+        return sorted(os.path.join(d, n) for n in os.listdir(d) if not n.startswith(".") and os.path.isdir(os.path.join(d, n)) and not os.path.islink(os.path.join(d, n)))
+    except Exception:
+        return []
+
+
+def codex_plugins(home):
+    """Codex plugins, the same as codexPlugins in plugins.ts: ~/.codex/plugins/cache/<marketplace>/<plugin>/<version>/,
+    the newest version folder of each, real folders inside the home only (decision 363)."""
+    root = os.path.join(home, ".codex", "plugins", "cache")
+    try:
+        owner_uid = os.stat(home).st_uid
+    except Exception:
+        owner_uid = -1
+    if not os.path.isdir(root) or os.path.islink(root) or not inside_home(root, home, owner_uid):
+        return []
+    out = []
+    for m in _real_dirs(root):
+        for p in _real_dirs(m):
+            versions = sorted(_real_dirs(p), key=lambda v: os.path.getmtime(v), reverse=True)
+            if versions and inside_home(versions[0], home, owner_uid):
+                out.append((os.path.basename(p), versions[0]))
+                if len(out) >= PLUGINS_MAX:
+                    return out
+    return out
+
+
+def copilot_plugins(home):
+    """GitHub Copilot CLI plugins, the same as copilotPlugins in plugins.ts: ~/.copilot/installed-plugins/<marketplace>/<plugin>/.
+    The root reporter cannot see the user's COPILOT_HOME, so it reads the default folder only (decision 363)."""
+    root = os.path.join(home, ".copilot", "installed-plugins")
+    try:
+        owner_uid = os.stat(home).st_uid
+    except Exception:
+        owner_uid = -1
+    if not os.path.isdir(root) or os.path.islink(root) or not inside_home(root, home, owner_uid):
+        return []
+    out = []
+    for m in _real_dirs(root):
+        for p in _real_dirs(m):
+            if inside_home(p, home, owner_uid):
+                out.append((os.path.basename(p), p))
+                if len(out) >= PLUGINS_MAX:
+                    return out
+    return out
+
+
 def plugin_locations(home):
     j = os.path.join
     L = []
-    for _name, root in installed_plugins(home):
+    for _name, root in claude_plugins(home):
         L.append((j(root, ".mcp.json"), "claude-code", "Claude Code plugin MCP servers, home", "home", "mcp-json"))
         if manifest_has_servers(root):
             L.append((j(root, ".claude-plugin", "plugin.json"), "claude-code", "Claude Code plugin MCP servers, home", "home", "mcp-json"))
         L.append((j(root, "hooks", "hooks.json"), "claude-code", "Claude Code plugin hooks, home", "home", None))
         L.append((j(root, "commands"), "claude-code", "Claude Code plugin command, home", "home", "dir"))
         L.append((j(root, "agents"), "claude-code", "Claude Code plugin agent definition, home", "home", "dir"))
+        mod = mod_module_path(root)
+        if mod:
+            L.append((mod, "claude-code", "Claude Code mod code, home", "home", None))
+    for _name, root in codex_plugins(home):
+        L.append((j(root, ".mcp.json"), "codex", "Codex plugin MCP servers, home", "home", "mcp-json"))
+        L.append((j(root, "agents"), "codex", "Codex plugin agent definition, home", "home", "dir"))
+    for _name, root in copilot_plugins(home):
+        L.append((j(root, "mcp.json"), "copilot", "Copilot plugin MCP servers, home", "home", "mcp-json"))
+        L.append((j(root, "agents"), "copilot", "Copilot plugin agent definition, home", "home", "dir"))
     return L
 
 
@@ -365,7 +501,10 @@ def read_skills(home, cwd):
     items = []
     roots = [(os.path.join(home, ".claude", "skills"), "claude-code"), (os.path.join(cwd, ".claude", "skills"), "claude-code"), (os.path.join(home, ".openclaw", "skills"), "openclaw"), (os.path.join(home, "clawd", "skills"), "openclaw")]
     # the skills of each installed Claude Code plugin, after the others, as the node CLI reads them (tools audit of 29 Sep 2026, fix 2)
-    roots += [(os.path.join(root, "skills"), "claude-code") for _name, root in installed_plugins(home)]
+    roots += [(os.path.join(root, "skills"), "claude-code") for _name, root in claude_plugins(home, cwd)]
+    # then Codex and GitHub Copilot CLI plugins, in the same order the node CLI reads them (decision 363)
+    roots += [(os.path.join(root, "skills"), "codex") for _name, root in codex_plugins(home)]
+    roots += [(os.path.join(root, "skills"), "copilot") for _name, root in copilot_plugins(home)]
     seen = set()
     for root, host in roots:
         if root in seen or not os.path.isdir(root) or os.path.islink(root):

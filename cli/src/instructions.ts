@@ -11,7 +11,8 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isBareServerMap, type Host } from "./parse";
-import { installedPlugins, manifestHasServers, pluginManifestPath } from "./plugins";
+import { claudeCodePlugins, codexPlugins, copilotPlugins, manifestHasServers, pluginManifestPath } from "./plugins";
+import { modModulePath } from "./mods";
 
 export interface InstructionLocation {
   host: Host;
@@ -103,7 +104,7 @@ export function instructionLocations(home = homedir(), cwd = process.cwd()): Ins
     ...openclaw(join(home, ".openclaw", "workspace")),
     ...openclaw(join(home, "clawd")),
     { host: "openclaw", path: join(home, ".openclaw", "openclaw.json"), kind: "OpenClaw config, home", scope: "home" },
-    ...pluginLocations(home),
+    ...pluginLocations(home, cwd),
   ];
 }
 
@@ -124,14 +125,26 @@ export function vscodeGlobalStorage(home: string, extension: string, file: strin
  * in the plugin's bare-map shape, or inline in plugin.json), its hooks, its commands and its agent definitions. The kind
  * labels name no plugin: the server sees "Claude Code plugin hooks, home", never which plugin.
  */
-export function pluginLocations(home = homedir()): InstructionLocation[] {
+export function pluginLocations(home = homedir(), cwd = process.cwd()): InstructionLocation[] {
   const out: InstructionLocation[] = [];
-  for (const p of installedPlugins(home)) {
+  for (const p of claudeCodePlugins(home, cwd)) {
     out.push({ host: "claude-code", path: join(p.root, ".mcp.json"), kind: "Claude Code plugin MCP servers, home", scope: "home", digest: "mcp-json" });
     if (manifestHasServers(p.root)) out.push({ host: "claude-code", path: pluginManifestPath(p.root), kind: "Claude Code plugin MCP servers, home", scope: "home", digest: "mcp-json" });
     out.push({ host: "claude-code", path: join(p.root, "hooks", "hooks.json"), kind: "Claude Code plugin hooks, home", scope: "home" });
     out.push({ host: "claude-code", path: join(p.root, "commands"), kind: "Claude Code plugin command, home", scope: "home", dir: true });
     out.push({ host: "claude-code", path: join(p.root, "agents"), kind: "Claude Code plugin agent definition, home", scope: "home", dir: true });
+    // a mod's hooks module, the code Claude Code runs (decision 370): a change to it is reported like a changed CLAUDE.md
+    const mod = modModulePath(p.root);
+    if (mod) out.push({ host: "claude-code", path: mod, kind: "Claude Code mod code, home", scope: "home" });
+  }
+  // Codex and GitHub Copilot CLI plugins (decision 363): their MCP servers and agent definitions, like a Claude Code plugin's
+  for (const p of codexPlugins(home)) {
+    out.push({ host: "codex", path: join(p.root, ".mcp.json"), kind: "Codex plugin MCP servers, home", scope: "home", digest: "mcp-json" });
+    out.push({ host: "codex", path: join(p.root, "agents"), kind: "Codex plugin agent definition, home", scope: "home", dir: true });
+  }
+  for (const p of copilotPlugins(home)) {
+    out.push({ host: "copilot", path: join(p.root, "mcp.json"), kind: "Copilot plugin MCP servers, home", scope: "home", digest: "mcp-json" });
+    out.push({ host: "copilot", path: join(p.root, "agents"), kind: "Copilot plugin agent definition, home", scope: "home", dir: true });
   }
   return out;
 }

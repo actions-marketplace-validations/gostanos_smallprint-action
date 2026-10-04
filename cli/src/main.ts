@@ -27,6 +27,7 @@ import { dirname, join, sep } from "node:path";
 import { discover, toUpload, type Discovered } from "./discover";
 import { detectFirewalls, firewallsForUpload } from "./firewalls";
 import { compareInstructions, formatInstructions, pathHash, readInstructionFiles, toFileUpload, type InstructionBaseline } from "./instructions";
+import { compareMods, findMods, modBaseline, type ModBaseline } from "./mods";
 import { advisoriesForVersion, advisoryWords } from "./gate";
 import { isPrivateHost, withoutPrivateHosts } from "./private-host";
 import { machineSalt, SALT_SHAPE, saltFile } from "./salt";
@@ -65,7 +66,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "0.1.6";
+const VERSION = "0.1.7";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -81,6 +82,8 @@ const SYSTEM_INSTALL = 'sudo --preserve-env=PATH,SMALLPRINT_TOKEN npx -y smallpr
 interface State {
   signedUp?: string;
   instructions?: InstructionBaseline;
+  /** What each mod's code said it does at the last run, so a new capability can be named (decision 370). */
+  mods?: ModBaseline;
   /** Scheduled runs so far: the first reports at once, later ones wait a random slice of the interval. */
   scheduledRuns?: number;
   /** "<base> <label>" for each machine label whose record has moved to keyed hashes; the unkeyed ones are not sent again. */
@@ -182,6 +185,27 @@ function reportInstructions(): void {
   console.log("  This record is a file on this machine (~/.config/smallprint/state.json). An agent that can write files can change it as well as the files above.");
   console.log("  To keep a copy it cannot reach, run sync with a free account; the record then lives on smallprint.dev and keeps every change. schedule runs that sync every six hours. https://smallprint.dev/cli#record");
   writeState({ ...state, instructions: baseline });
+}
+
+/**
+ * Claude Code mods (decision 370): plugins whose code runs inside Claude Code. Each is named with what its code says
+ * it does, and a capability it did not have at the last run is called out. Read on this machine and never sent; the
+ * module itself is also a watched instruction file, so a change to its code shows in the section above.
+ */
+function reportMods(): void {
+  const mods = findMods(homedir(), process.cwd());
+  const state = readState();
+  if (!mods.length && !state.mods) return;
+  console.log("\nMods (Claude Code plugins whose code runs inside Claude Code; read on this machine, never uploaded):");
+  if (!mods.length) console.log("  none found now.");
+  for (const { mod, added, first } of compareMods(mods, state.mods ?? {})) {
+    console.log(`  ${mod.plugin}: ${mod.capabilities.length ? mod.capabilities.join("; ") : "none of the abilities the command looks for"}`);
+    console.log(`    code: ${tilde(mod.module)}, ${mod.sha256.slice(0, 12)}`);
+    if (added.length) console.log(`    NEW since the last run: ${added.join("; ")}. If you did not expect this, read the mod's code before your next session.`);
+    else if (first && state.mods) console.log("    first seen on this run.");
+  }
+  if (mods.length) console.log("  What each mod can do is read from its code's text; code written to hide what it does is not caught. https://smallprint.dev/cli#mods");
+  writeState({ ...readState(), mods: modBaseline(mods) });
 }
 
 /** The lock on disk for --locked and lock; the path comes from --file, default smallprint.lock in the working directory. */
@@ -369,7 +393,8 @@ async function check(): Promise<number> {
   if (flag("json")) {
     const instructions = readInstructionFiles().map((f) => ({ host: f.host, path: f.path, sha256: f.sha256 }));
     // self-describing, because readers paste this into an assistant (decision 210): nothing was sent, and the fields are explained on the CLI page
-    console.log(JSON.stringify({ about: "https://smallprint.dev/cli#json", sent: "nothing", read: found.read, errors: found.errors, items: toUpload(found.items), instructions }, null, 2));
+    const mods = findMods(homedir(), process.cwd()).map((m) => ({ plugin: m.plugin, module: m.module, sha256: m.sha256, capabilities: m.capabilities }));
+    console.log(JSON.stringify({ about: "https://smallprint.dev/cli#json", sent: "nothing", read: found.read, errors: found.errors, items: toUpload(found.items), instructions, mods }, null, 2));
     return 0;
   }
   console.log(`Read ${found.read.length} config location${found.read.length === 1 ? "" : "s"}:`);
@@ -380,6 +405,7 @@ async function check(): Promise<number> {
     console.log("No MCP servers or skills found in the locations above (Claude Desktop, Claude Code and its plugins, Cursor, Windsurf, Codex, VS Code, Cline, Roo, OpenClaw, Hermes, harnOS).");
     console.log("Have a config somewhere else? Paste it at https://smallprint.dev/check.");
     reportInstructions();
+    reportMods();
     return 0;
   }
   printTable(found.items);
@@ -389,6 +415,7 @@ async function check(): Promise<number> {
     for (const h of hygiene) console.log(`  ${h}`);
   }
   reportInstructions();
+  reportMods();
   if (flag("no-upload")) {
     console.log("\n--no-upload: nothing sent.");
     return 0;

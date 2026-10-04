@@ -4,7 +4,7 @@
  * reads server names, commands, args and URLs. Env values are inspected for
  * hygiene notes and discarded; nothing here retains them.
  */
-export type Host = "claude-code" | "claude-desktop" | "cursor" | "codex" | "windsurf" | "vscode" | "zed" | "gemini" | "cline" | "roo" | "openclaw" | "hermes" | "harnos" | "manual";
+export type Host = "claude-code" | "claude-desktop" | "cursor" | "codex" | "copilot" | "windsurf" | "vscode" | "zed" | "gemini" | "cline" | "roo" | "openclaw" | "hermes" | "harnos" | "manual";
 
 /** Names that can be published: an npm package (optionally scoped) or a PyPI project. Paths never qualify. */
 const NPM_NAME = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
