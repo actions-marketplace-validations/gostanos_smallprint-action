@@ -3,13 +3,13 @@
 The thin, open client for [Small Print](https://smallprint.dev): find the MCP servers and agent skills your agents have installed, see what the advisory databases have on record for them, and get a grade with the rule printed next to it.
 
 ```
-npx smallprint@0.1.6 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
+npx smallprint@0.1.7 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
 npx smallprint check            # discover and print; asks before it sends anything, then grades; then one question: watch these every morning?
 npx smallprint check --upload   # answer the send question up front (a script or CI has no terminal to ask in, so without it nothing is sent)
 npx smallprint check --email you@company.com   # answer it up front; --no-signup never asks
 npx smallprint check --share    # also get a card link you can post
 npx smallprint check --json     # machine-readable inventory, nothing sent; says so in itself (about, sent) and names its fields at https://smallprint.dev/cli#json
-npx smallprint@0.1.6 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
+npx smallprint@0.1.7 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
 npx smallprint check --live          # ask your hosted servers what they serve now, and compare with the record for their version
 npx smallprint check --live-local    # the same for local servers too; shows the commands it will start and asks first, and never calls a tool; it starts them with the keys in your config, so keep production credentials out of that config
 npx smallprint show npm/mcp-remote   # the record for one entry: baseline, tools read, advisories, last releases
@@ -32,7 +32,9 @@ Small Print is not only a lookup: pin what you run and it emails you the morning
 
 What leaves your machine: server names, versions, hosts, file hashes of skills (the SKILL.md hash and one hash over all files), and with `sync` a kind label, a hash of the path (made with a random key created on your computer and never sent, `~/.config/smallprint/salt`) and a hash of the contents for each instruction file, CLAUDE.md imports included, the machine label (this computer's name unless you give `--label`), and the names of any agent firewalls present on the machine. Those names are kept under a keyed hash of the account and machine label, not under the account, so nobody reading the count can tell whose machine a row is; Small Print holds the key. `lock`, `gate` and `check --live` look entries up on the record by registry name (and `--live` by version or host). What never leaves: paths, config values, environment variables, tokens, file contents. Plaintext secrets and world-readable config files are reported locally only. With `--no-upload` nothing is sent; combined with `--live` it compares nothing, because the live check has to ask smallprint.dev. An address on your own machine or a private network is never sent in any mode.
 
-Looks in: Claude Desktop, Claude Code (global, project, skills), Cursor, Windsurf, Codex, VS Code, Zed, Gemini CLI, Cline, Roo (the project's `.roo/mcp.json`), and the OpenClaw, Hermes and harnOS skill folders. The full list of files is at https://smallprint.dev/cli.
+Looks in: Claude Desktop, Claude Code (global, project, skills, installed plugins, plugins synced from the Claude directory), Cursor, Windsurf, Codex (including installed plugins), GitHub Copilot CLI plugins, VS Code, Zed, Gemini CLI, Cline, Roo (the project's `.roo/mcp.json`), and the OpenClaw, Hermes and harnOS skill folders. The full list of files is at https://smallprint.dev/cli.
+
+Claude Code mods, plugins whose code runs inside Claude Code, are listed with what their code says it does (for example "changes the tool descriptions Claude reads" or "uses the network"), and a change to a mod's code, or an ability it did not have at the last run, is reported. See https://smallprint.dev/cli#mods.
 
 `check` also hashes your instruction files (CLAUDE.md and what it imports, including a bare `@docs/notes.md` path when that file exists, AGENTS.md, an OpenClaw workspace's TOOLS.md and SOUL.md, Cursor, Windsurf, Copilot, Gemini, Cline and Roo rules, Claude agents, commands and settings with hooks, installed Claude Code plugins, and the server definitions in your MCP configs, VS Code, Cline and Roo included, with env values hashed) and compares them with the last run on the same machine: first seen, unchanged since a date, changed, or removed. A prompt injection that rewrites one of these persists into every later run; this is the line that says so. For settings files the line names the section that changed (`in: permissions` is an always-allow click, `in: hooks` is worth reading). Five ways to keep that record, your choice:
 

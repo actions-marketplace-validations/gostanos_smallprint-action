@@ -1,6 +1,6 @@
 {
   "name": "smallprint",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": false,
   "description": "Small Print (MCP): see the MCP servers, skills and plugins your agents have installed, get the advisories on record for them, and be told when what they tell your agent changes. Nothing is sent until you say yes.",
   "license": "MIT",

@@ -49,6 +49,34 @@ describe("level-four reporter parity", () => {
     writeFileSync(join(plugin, "commands", "go.md"), "go\n");
     writeFileSync(join(plugin, "skills", "s1", "SKILL.md"), "---\nname: s1\n---\nDo it\n");
     writeFileSync(join(home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "p@m": [{ scope: "user", installPath: plugin }] } }));
+    // since 3 Oct 2026 (decision 363): a Codex plugin and a GitHub Copilot CLI plugin, each with servers, an agent and a skill
+    const codex = join(home, ".codex", "plugins", "cache", "openai-curated", "linear", "5.0.1");
+    mkdirSync(join(codex, "agents"), { recursive: true });
+    mkdirSync(join(codex, "skills", "cx"), { recursive: true });
+    writeFileSync(join(codex, ".mcp.json"), JSON.stringify({ mcpServers: { linear: { type: "http", url: "https://mcp.linear.app/mcp" } } }));
+    writeFileSync(join(codex, "agents", "planner.md"), "plan\n");
+    writeFileSync(join(codex, "skills", "cx", "SKILL.md"), "---\nname: cx\n---\nCodex skill\n");
+    // since 3 Oct 2026 (decision 370): a mod synced from claude.ai, and a plugin saved under ~/.claude/skills/
+    const synced = join(home, ".claude", "plugins", "synced", "spinner-count");
+    mkdirSync(join(synced, ".claude-plugin"), { recursive: true });
+    mkdirSync(join(synced, "hooks"), { recursive: true });
+    mkdirSync(join(synced, "skills", "sy"), { recursive: true });
+    writeFileSync(join(synced, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "spinner-count" }));
+    writeFileSync(join(synced, "hooks", "hooks.json"), JSON.stringify({ modules: ["./register.js"] }));
+    writeFileSync(join(synced, "hooks", "register.js"), "export function register(on) { on('tool.describe', async ($, e, next) => next(e)) }\n");
+    writeFileSync(join(synced, "skills", "sy", "SKILL.md"), "---\nname: sy\n---\nSynced skill\n");
+    const saved = join(home, ".claude", "skills", "deploy-helper");
+    mkdirSync(join(saved, ".claude-plugin"), { recursive: true });
+    mkdirSync(join(saved, "commands"), { recursive: true });
+    writeFileSync(join(saved, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "deploy-helper" }));
+    writeFileSync(join(saved, ".mcp.json"), JSON.stringify({ deploy: { command: "npx", args: ["-y", "deploy-mcp@1.0.0"] } }));
+    writeFileSync(join(saved, "commands", "ship.md"), "ship it\n");
+    const cop = join(home, ".copilot", "installed-plugins", "awesome-copilot", "kanban");
+    mkdirSync(join(cop, "agents"), { recursive: true });
+    mkdirSync(join(cop, "skills", "kb"), { recursive: true });
+    writeFileSync(join(cop, "mcp.json"), JSON.stringify({ mcpServers: { kb: { type: "stdio", command: "npx", args: ["-y", "kanban-mcp@1.0.0"] } } }));
+    writeFileSync(join(cop, "agents", "triage.agent.md"), "triage\n");
+    writeFileSync(join(cop, "skills", "kb", "SKILL.md"), "---\nname: kb\n---\nCopilot skill\n");
 
     const py = JSON.parse(execFileSync(PY, [HELPER, "--user", "nobody", "--label", "t", "--json", "--home", home], { encoding: "utf8" })) as { files: { path: string; kind: string; sha256: string; sections?: Record<string, string> }[]; items: Record<string, unknown>[] };
     const nodeFiles = readInstructionFiles(home, home).map((f) => ({ path: f.path, kind: f.kind, sha256: f.sha256, ...(f.sections ? { sections: f.sections } : {}) }));
@@ -58,6 +86,9 @@ describe("level-four reporter parity", () => {
     expect(byPath(py.files)).toEqual(byPath(nodeFiles));
     expect(py.items).toEqual(nodeItems);
     expect(py.files.map((f) => f.kind)).toContain("Claude Code CLAUDE.md import, home");
+    expect(py.files.map((f) => f.kind)).toContain("Codex plugin MCP servers, home");
+    expect(py.files.map((f) => f.kind)).toContain("Claude Code mod code, home");
+    expect(py.files.map((f) => f.kind)).toContain("Copilot plugin agent definition, home");
     expect(py.files.map((f) => f.path)).toEqual(expect.arrayContaining([join(home, ".claude", "bare.md"), join(plugin, ".mcp.json"), join(plugin, "hooks", "hooks.json"), join(plugin, "commands", "go.md"), join(code, "mcp.json")]));
     expect(py.files.find((f) => f.path === join(plugin, ".mcp.json"))!.sections).toHaveProperty("srv");
     expect(py.items.map((i) => i.name)).toContain("s1");
