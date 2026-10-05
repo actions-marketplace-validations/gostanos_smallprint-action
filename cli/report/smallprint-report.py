@@ -25,7 +25,8 @@ import sys
 import urllib.error
 import urllib.request
 
-VERSION = "0.0.13"
+# the version of the smallprint package this file ships in; test/version.test.ts holds the two together
+VERSION = "0.1.8"
 FILE_MAX = 5_000_000
 DIR_MAX_FILES = 200
 SKILL_MAX_FILES = 2000
@@ -71,17 +72,8 @@ def locations(home: str, cwd: str):
         (j(cwd, "GEMINI.md"), "manual", "Gemini GEMINI.md, project", "project", None),
         (j(cwd, ".clinerules"), "manual", "Cline .clinerules, project", "project", None),
         (j(cwd, ".roo", "rules"), "manual", "Roo rules file, project", "project", "dir"),
-        (desktop, "claude-desktop", "Claude Desktop MCP servers, home", "home", "mcp-json"),
-        (j(home, ".claude.json"), "claude-code", "Claude Code MCP servers, home", "home", "mcp-json"),
-        (j(cwd, ".mcp.json"), "claude-code", "Claude Code MCP servers, project", "project", "mcp-json"),
-        (j(home, ".cursor", "mcp.json"), "cursor", "Cursor MCP servers, home", "home", "mcp-json"),
-        (j(cwd, ".cursor", "mcp.json"), "cursor", "Cursor MCP servers, project", "project", "mcp-json"),
-        (j(home, ".codeium", "windsurf", "mcp_config.json"), "windsurf", "Windsurf MCP servers, home", "home", "mcp-json"),
     ]
-    L += mcp_extra_locations(home, cwd)
-    L += [
-        (j(home, ".codex", "config.toml"), "codex", "Codex config.toml, home", "home", None),
-    ]
+    L += mcp_config_locations(home, cwd, desktop)
     L += openclaw(j(home, ".openclaw", "workspace")) + openclaw(j(home, "clawd"))
     L.append((j(home, ".openclaw", "openclaw.json"), "openclaw", "OpenClaw config, home", "home", None))
     L += plugin_locations(home)
@@ -93,16 +85,31 @@ def vscode_base(home):
     return j(os.environ.get("APPDATA", j(home, "AppData", "Roaming")), "Code", "User") if sys.platform == "win32" else j(home, "Library", "Application Support", "Code", "User")
 
 
-def mcp_extra_locations(home, cwd):
-    """VS Code, Cline and Roo MCP configs, as the node CLI lists them after the Windsurf one (tools audit of 29 Sep 2026, fix 10)."""
+def mcp_config_locations(home, cwd, desktop):
+    """The files that hold server definitions, in the order of configLocations in discover.ts, which is the one table of
+    clients: every client the command lists servers from is watched here too. Zed and Gemini were listed and not watched
+    until 0.1.8. Codex's TOML is hashed whole; the JSON configs by the digest of their server definitions."""
     j = os.path.join
     g = lambda ext, f: j(vscode_base(home), "globalStorage", ext, "settings", f)
     return [
+        (desktop, "claude-desktop", "Claude Desktop MCP servers, home", "home", "mcp-json"),
+        (j(home, ".claude.json"), "claude-code", "Claude Code MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".mcp.json"), "claude-code", "Claude Code MCP servers, project", "project", "mcp-json"),
+        (j(home, ".cursor", "mcp.json"), "cursor", "Cursor MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".cursor", "mcp.json"), "cursor", "Cursor MCP servers, project", "project", "mcp-json"),
+        (j(home, ".codeium", "windsurf", "mcp_config.json"), "windsurf", "Windsurf MCP servers, home", "home", "mcp-json"),
+        (j(home, ".codex", "config.toml"), "codex", "Codex config.toml, home", "home", None),
+        (j(cwd, ".codex", "config.toml"), "codex", "Codex config.toml, project", "project", None),
         (j(cwd, ".vscode", "mcp.json"), "vscode", "VS Code MCP servers, project", "project", "mcp-json"),
         (j(vscode_base(home), "mcp.json"), "vscode", "VS Code MCP servers, home", "home", "mcp-json"),
+        (j(home, ".config", "zed", "settings.json"), "zed", "Zed MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".zed", "settings.json"), "zed", "Zed MCP servers, project", "project", "mcp-json"),
+        (j(home, ".gemini", "settings.json"), "gemini", "Gemini MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".gemini", "settings.json"), "gemini", "Gemini MCP servers, project", "project", "mcp-json"),
+        (j(cwd, ".windsurf", "mcp.json"), "windsurf", "Windsurf MCP servers, project", "project", "mcp-json"),
         (g("saoudrizwan.claude-dev", "cline_mcp_settings.json"), "cline", "Cline MCP servers, home", "home", "mcp-json"),
-        (g("rooveterinaryinc.roo-cline", "mcp_settings.json"), "roo", "Roo MCP servers, home", "home", "mcp-json"),
         (j(cwd, ".roo", "mcp.json"), "roo", "Roo MCP servers, project", "project", "mcp-json"),
+        (g("rooveterinaryinc.roo-cline", "mcp_settings.json"), "roo", "Roo MCP servers, home", "home", "mcp-json"),
     ]
 
 
@@ -210,27 +217,51 @@ def claude_plugins(home, cwd=None):
     return uniq
 
 
-def mod_module_path(root):
-    """A mod's hooks module, as modModulePath in mods.ts: the first path in hooks/hooks.json "modules", relative to
-    hooks.json, a real file inside the plugin (decision 370)."""
+MOD_FILES_MAX = 40
+MOD_IMPORT = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)["'`](\.{1,2}/[^"'`\n]+)["'`]""")
+MOD_EXTENSIONS = ["", ".js", ".mjs", ".cjs", ".ts", "/index.js", "/index.mjs"]
+
+
+def inside_plugin(root, path):
+    """A real file inside the plugin, never a link out of it (insidePlugin in mods.ts)."""
+    try:
+        real_root = os.path.realpath(root)
+        real = os.path.realpath(path)
+        return (real == real_root or real.startswith(real_root + os.sep)) and os.path.isfile(path) and not os.path.islink(path)
+    except Exception:
+        return False
+
+
+def mod_module_paths(root):
+    """Every code file of a mod, as modModulePaths in mods.ts: each module hooks/hooks.json names, in the order written,
+    and every file inside the plugin those import by a relative path, in the order found (decision 370; all of them
+    since 0.1.8, where only the first module was read before)."""
     hooks = os.path.join(root, "hooks", "hooks.json")
     try:
         with open(hooks, "rb") as f:
             modules = json.loads(f.read().decode("utf-8", "replace")).get("modules")
     except Exception:
-        return None
-    first = next((m for m in modules if isinstance(m, str) and m), None) if isinstance(modules, list) else None
-    if not first:
-        return None
-    path = os.path.abspath(os.path.join(os.path.dirname(hooks), first))
-    try:
-        real_root = os.path.realpath(root)
-        real = os.path.realpath(path)
-        if not (real == real_root or real.startswith(real_root + os.sep)) or not os.path.isfile(path) or os.path.islink(path):
-            return None
-    except Exception:
-        return None
-    return path
+        return []
+    named = [m for m in modules if isinstance(m, str) and m] if isinstance(modules, list) else []
+    queue = [p for p in (os.path.abspath(os.path.join(os.path.dirname(hooks), m)) for m in named) if inside_plugin(root, p)]
+    out = []
+    while queue and len(out) < MOD_FILES_MAX:
+        file = queue.pop(0)
+        if file in out:
+            continue
+        out.append(file)
+        try:
+            if os.lstat(file).st_size > 4 * 1024 * 1024:
+                continue
+            with open(file, "rb") as f:
+                src = f.read().decode("utf-8", "replace")
+        except Exception:
+            continue
+        for m in MOD_IMPORT.finditer(src):
+            target = next((p for p in (os.path.abspath(os.path.join(os.path.dirname(file), m.group(1) + e)) for e in MOD_EXTENSIONS) if inside_plugin(root, p)), None)
+            if target and target not in out and target not in queue:
+                queue.append(target)
+    return out
 
 
 def manifest_has_servers(root):
@@ -300,8 +331,7 @@ def plugin_locations(home):
         L.append((j(root, "hooks", "hooks.json"), "claude-code", "Claude Code plugin hooks, home", "home", None))
         L.append((j(root, "commands"), "claude-code", "Claude Code plugin command, home", "home", "dir"))
         L.append((j(root, "agents"), "claude-code", "Claude Code plugin agent definition, home", "home", "dir"))
-        mod = mod_module_path(root)
-        if mod:
+        for mod in mod_module_paths(root):
             L.append((mod, "claude-code", "Claude Code mod code, home", "home", None))
     for _name, root in codex_plugins(home):
         L.append((j(root, ".mcp.json"), "codex", "Codex plugin MCP servers, home", "home", "mcp-json"))
@@ -360,6 +390,7 @@ def mcp_digest(text: str, key=None):
         take(j, "")
     take(j.get("mcpServers"), "")
     take(j.get("servers"), "")
+    take(j.get("context_servers"), "")
     if isinstance(j.get("projects"), dict):
         for path, p in j["projects"].items():
             take(p.get("mcpServers") if isinstance(p, dict) else None, f"project:{(keyed_hash(key, 'project', path) if key else sha256_text(path))[:12]}/")
@@ -563,8 +594,8 @@ def write_keyed_labels(path, labels):
 
 
 def file_upload(f, key, migrate):
-    """One file as sync sends it (toFileUpload in instructions.ts): keyed with the salt when there is one; on the first keyed
-    report for a label, the unkeyed hashes it was recorded under ride along once so the server can move the record."""
+    """One file as sync sends it (toFileUpload in instructions.ts): keyed with the salt when there is one. With migrate, the
+    unkeyed hashes it was recorded under ride along once so the server can move the record; see main for when that is."""
     content = f["keyed"] if key and "keyed" in f else {"sha256": f["sha256"], **({"sections": f["sections"]} if "sections" in f else {})}
     out = {"pathHash": keyed_hash(key, "path", f["path"]) if key else sha256_text(f["path"]), "kind": f["kind"], "host": f["host"], "scope": "home", "sha256": content["sha256"], **({"sections": content["sections"]} if "sections" in content else {})}
     if key and migrate:
@@ -586,13 +617,16 @@ def main():
     ap.add_argument("--home", help="read this directory instead of the account's home (tests)")
     ap.add_argument("--salt-file", default="/etc/smallprint/salt", help="the root-owned copy of the machine's salt, written by schedule --install --system")
     ap.add_argument("--keyed-file", default="/etc/smallprint/keyed-labels", help="labels whose record already moved to keyed hashes")
+    ap.add_argument("--migrate-file", default="/etc/smallprint/migrate-labels", help="labels that reported from this machine before hashes were keyed, written by the installer when it finds such a reporter")
     a = ap.parse_args()
     if not (a.base.startswith("https://") or a.base.startswith("http://localhost") or a.base.startswith("http://127.0.0.1")):
         sys.exit("refusing a non-https base")
     home = a.home or pwd.getpwnam(a.user).pw_dir
     key = read_salt(a.salt_file)
     keyed_labels = read_keyed_labels(a.keyed_file)
-    migrate = bool(key) and a.label not in keyed_labels
+    # the earlier, unkeyed hashes go out only for a label the installer found reporting without a salt, once (tools audit
+    # of 4 Oct 2026, fix 3); a machine that starts keyed has nothing to move and sends none
+    migrate = bool(key) and a.label in read_keyed_labels(a.migrate_file) and a.label not in keyed_labels
     files = read_files(home, home, key)
     items = read_skills(home, home)
     upload = [file_upload(f, key, migrate) for f in files if f["scope"] == "home"]
@@ -602,7 +636,7 @@ def main():
         return
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if a.dry_run:
-        print(f"[{stamp}] dry run: would send {len(upload)} files and {len(items)} skills for {a.user} as {a.label!r} to {a.base}")
+        print(f"[{stamp}] dry run: would send {len(upload)} files and {len(items)} skills for {a.user} as {a.label!r} to {a.base}" + ("; with the earlier unkeyed hash of each path, this once" if migrate else ""))
         return
     try:
         with open(a.token_file) as fh:
@@ -614,7 +648,7 @@ def main():
         with urllib.request.urlopen(req, timeout=30) as r:
             res = json.loads(r.read().decode())
         # a server that answers with "rekeyed" moved this label's record to the keyed hashes: the unkeyed ones are not sent again
-        if migrate and isinstance(res.get("rekeyed"), int):
+        if key and (not migrate or isinstance(res.get("rekeyed"), int)):
             write_keyed_labels(a.keyed_file, keyed_labels + [a.label])
     except urllib.error.HTTPError as e:
         # the server's one line says why (a token revoked, a plan without the scheduled run); print it, not just the status

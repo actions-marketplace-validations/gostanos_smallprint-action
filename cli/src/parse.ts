@@ -159,8 +159,10 @@ export function envHygiene(entry: Record<string, unknown>, configPath: string): 
 }
 
 function serverFromEntry(host: Host, name: string, entry: Record<string, unknown>, configPath: string): DiscoveredServer {
-  const command = typeof entry.command === "string" ? entry.command : undefined;
-  const args = Array.isArray(entry.args) ? (entry.args as string[]) : [];
+  // Zed's older form nests the program and its arguments under "command": { "path": ..., "args": [...] }
+  const nested = entry.command && typeof entry.command === "object" && !Array.isArray(entry.command) ? (entry.command as Record<string, unknown>) : null;
+  const command = typeof entry.command === "string" ? entry.command : nested && typeof nested.path === "string" ? nested.path : undefined;
+  const args = Array.isArray(entry.args) ? (entry.args as string[]) : nested && Array.isArray(nested.args) ? (nested.args as string[]) : [];
   const url = typeof entry.url === "string" ? entry.url : typeof entry.serverUrl === "string" ? entry.serverUrl : null;
   const inferred = inferPackage(command, args);
   let transport = inferred.transport;

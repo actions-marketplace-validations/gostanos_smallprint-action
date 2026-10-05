@@ -1,6 +1,6 @@
 # Installing smallprint-mcp
 
-smallprint-mcp is a read-only MCP server over Small Print's public record of MCP servers, agent skills and plugins. It needs Node.js 18 or later, and no account, key or configuration.
+smallprint-mcp is a read-only MCP server over Small Print's public record of MCP servers, agent skills and plugins. It needs Node.js 20 or later, and no account, key or configuration.
 
 Add this to the MCP settings file (for Cline, `cline_mcp_settings.json`):
 
@@ -9,7 +9,7 @@ Add this to the MCP settings file (for Cline, `cline_mcp_settings.json`):
   "mcpServers": {
     "smallprint": {
       "command": "npx",
-      "args": ["-y", "smallprint-mcp@0.2.3"]
+      "args": ["-y", "smallprint-mcp@0.2.6"]
     }
   }
 }

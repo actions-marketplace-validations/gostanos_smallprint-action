@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "written": "2026-10-04T15:54:44.384Z",
+  "written": "2026-10-05T03:44:39.864Z",
   "scope": "project",
   "items": [
     {
@@ -8,15 +8,34 @@
       "host": "claude-code",
       "name": "smallprint",
       "canonicalName": "npm:smallprint-mcp",
-      "version": "0.2.5",
-      "recordSha256": "a73619aca190fb0341c00adf728a61b94b01c9781c6730927a46fd3a9fd1979f"
+      "version": "0.2.6"
     }
   ],
   "files": [
     {
       "path": ".mcp.json",
       "kind": "Claude Code MCP servers, project",
-      "sha256": "2f452942878fa7707396a3806c9c1477bca54657a0c4c5b80f4cf0537bb417b7"
+      "sha256": "cbe9f944d5e8bc1bfdffff327af1d59f0a44ae3ec17bdc56dc700417d63f3e01"
     }
+  ],
+  "covers": [
+    "Claude Code MCP servers, home",
+    "Claude Code MCP servers, project",
+    "Claude Desktop MCP servers, home",
+    "Cline MCP servers, home",
+    "Codex config.toml, home",
+    "Codex config.toml, project",
+    "Cursor MCP servers, home",
+    "Cursor MCP servers, project",
+    "Gemini MCP servers, home",
+    "Gemini MCP servers, project",
+    "Roo MCP servers, home",
+    "Roo MCP servers, project",
+    "VS Code MCP servers, home",
+    "VS Code MCP servers, project",
+    "Windsurf MCP servers, home",
+    "Windsurf MCP servers, project",
+    "Zed MCP servers, home",
+    "Zed MCP servers, project"
   ]
 }

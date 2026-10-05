@@ -1,0 +1,31 @@
+# Publish smallprint-mcp to npm from this repository with npm trusted publishing (OpenID Connect): no token, no
+# one-time password, a provenance statement attached to the package. npmjs.com must list this repository and this
+# workflow file as the package's trusted publisher (package settings, Trusted Publisher, GitHub Actions).
+# Run it from the Actions tab or with: gh workflow run publish-mcp.yml. The version is staged, not released: approve it
+# on npmjs.com (the package page, or npm stage approve <id>) and only then does it go live.
+name: Publish smallprint-mcp to npm
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm that knows trusted publishing
+        run: npm install -g npm@latest && npm --version
+      - name: Install and build the server
+        working-directory: mcp
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+      - name: Publish with provenance
+        working-directory: mcp
+        # built in the step above; --ignore-scripts skips the package's own prepublish hook, which is for the private repository
+        # staged: the version waits on npmjs.com until the owner approves it with his second factor, so the workflow alone can never release one
+        run: npm stage publish --access public --provenance --ignore-scripts

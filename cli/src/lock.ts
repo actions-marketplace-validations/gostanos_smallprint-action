@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Discovered, UploadItem } from "./parse";
-import type { InstructionFile } from "./instructions";
+import { MCP_CONFIG_KINDS_0_1_7, mcpConfigKinds, type InstructionFile } from "./instructions";
 
 export const LOCK_VERSION = 1;
 export const LOCK_FILE = "smallprint.lock";
@@ -50,6 +50,12 @@ export interface Lockfile {
   scope: LockScope;
   items: LockItem[];
   files: LockFileEntry[];
+  /**
+   * The kinds of server-definition file the command watched when it wrote this lock (from 0.1.8). A file of a kind the
+   * lock does not cover, or one this version does not read, is said in a line and is not a difference: a command one
+   * version apart from the lock's then still agrees with it, which is what the Action and the pre-commit hook need.
+   */
+  covers?: string[];
 }
 
 export const itemKey = (i: { host: string; name: string; kind: string }): string => `${i.kind}:${i.host}:${i.name}`;
@@ -93,7 +99,7 @@ export function buildLock(items: readonly UploadItem[], files: readonly Instruct
     .map((i) => ({ kind: i.kind, host: i.host, name: i.name, canonicalName: i.canonicalName ?? null, version: i.version ?? null, ...(i.remoteHost ? { remoteHost: i.remoteHost } : {}), ...(i.skillMdSha256 ? { skillMdSha256: i.skillMdSha256 } : {}), ...(i.treeSha256 ? { treeSha256: i.treeSha256 } : {}) }))
     .sort((a, b) => itemKey(a).localeCompare(itemKey(b)));
   const lockFiles: LockFileEntry[] = keptFiles.map((f) => ({ path: displayPath(f.path, home, cwd), kind: f.kind, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path));
-  return { version: LOCK_VERSION, written: now.toISOString(), scope, items: lockItems, files: lockFiles };
+  return { version: LOCK_VERSION, written: now.toISOString(), scope, items: lockItems, files: lockFiles, covers: mcpConfigKinds() };
 }
 
 export interface LockDiff {
@@ -103,6 +109,10 @@ export interface LockDiff {
   filesNew: LockFileEntry[];
   filesMissing: LockFileEntry[];
   filesChanged: { path: string; before: string; after: string }[];
+  /** Here now, of a kind the lock's writer did not watch: not a difference, a reason to write the lock again. */
+  filesNotCovered: LockFileEntry[];
+  /** In the lock, of a kind this version of the command does not read: not a difference, a reason to update the command. */
+  filesNotRead: LockFileEntry[];
 }
 
 export const diffIsEmpty = (d: LockDiff): boolean => !d.added.length && !d.removed.length && !d.changed.length && !d.filesNew.length && !d.filesMissing.length && !d.filesChanged.length;
@@ -111,7 +121,7 @@ export const diffIsEmpty = (d: LockDiff): boolean => !d.added.length && !d.remov
 export function diffLock(lock: Lockfile, current: Lockfile): LockDiff {
   const was = new Map(lock.items.map((i) => [itemKey(i), i]));
   const now = new Map(current.items.map((i) => [itemKey(i), i]));
-  const out: LockDiff = { added: [], removed: [], changed: [], filesNew: [], filesMissing: [], filesChanged: [] };
+  const out: LockDiff = { added: [], removed: [], changed: [], filesNew: [], filesMissing: [], filesChanged: [], filesNotCovered: [], filesNotRead: [] };
   for (const [k, i] of now) if (!was.has(k)) out.added.push(i);
   for (const [k, i] of was) if (!now.has(k)) out.removed.push(i);
   for (const [k, after] of now) {
@@ -128,8 +138,12 @@ export function diffLock(lock: Lockfile, current: Lockfile): LockDiff {
   }
   const fWas = new Map(lock.files.map((f) => [f.path, f]));
   const fNow = new Map(current.files.map((f) => [f.path, f]));
-  for (const [p, f] of fNow) if (!fWas.has(p)) out.filesNew.push(f);
-  for (const [p, f] of fWas) if (!fNow.has(p)) out.filesMissing.push(f);
+  // only the kinds of server-definition file differ between versions; every other kind is compared as it always was
+  const watchedNow = new Set(current.covers ?? mcpConfigKinds());
+  const watchedThen = new Set(lock.covers ?? MCP_CONFIG_KINDS_0_1_7);
+  const everWatched = new Set([...watchedNow, ...watchedThen]);
+  for (const [p, f] of fNow) if (!fWas.has(p)) (everWatched.has(f.kind) && !watchedThen.has(f.kind) ? out.filesNotCovered : out.filesNew).push(f);
+  for (const [p, f] of fWas) if (!fNow.has(p)) (everWatched.has(f.kind) && !watchedNow.has(f.kind) ? out.filesNotRead : out.filesMissing).push(f);
   for (const [p, f] of fNow) {
     const b = fWas.get(p);
     if (b && b.sha256 !== f.sha256) out.filesChanged.push({ path: p, before: b.sha256, after: f.sha256 });
@@ -149,12 +163,20 @@ export function formatDiff(d: LockDiff): string[] {
   return lines;
 }
 
+/** The lines for what the lock and this version do not both watch; printed, never a failure. */
+export function formatNotCompared(d: LockDiff): string[] {
+  const lines: string[] = [];
+  for (const f of d.filesNotCovered) lines.push(`  NOT IN THIS LOCK  ${f.path}: the version that wrote the lock did not watch this kind of file (${f.kind}); run smallprint lock again to cover it`);
+  for (const f of d.filesNotRead) lines.push(`  NOT READ          ${f.path}: the lock holds it and this version of the command does not read this kind of file (${f.kind}); update the command`);
+  return lines;
+}
+
 export function parseLock(text: string): Lockfile {
   const j = JSON.parse(text) as Partial<Lockfile>;
   if (j.version !== LOCK_VERSION || !Array.isArray(j.items) || !Array.isArray(j.files)) throw new Error(`not a smallprint lock (version ${LOCK_VERSION})`);
   // locks from 0.0.12 have no scope field: they were written for the whole machine
   const scope: LockScope = j.scope === "project" ? "project" : "machine";
-  return { version: LOCK_VERSION, written: typeof j.written === "string" ? j.written : "", scope, items: j.items as LockItem[], files: j.files as LockFileEntry[] };
+  return { version: LOCK_VERSION, written: typeof j.written === "string" ? j.written : "", scope, items: j.items as LockItem[], files: j.files as LockFileEntry[], ...(Array.isArray(j.covers) ? { covers: j.covers.filter((k): k is string => typeof k === "string") } : {}) };
 }
 
 /**
