@@ -10,4 +10,11 @@ describe("the version the command reports", () => {
     const constant = /^const VERSION = "([^"]+)";/m.exec(main)?.[1];
     expect(constant).toBe(pkg.version);
   });
+
+  // the root reporter said 0.0.13 inside package 0.1.7 (tools audit of 4 Oct 2026, fix 13)
+  it("is the version the root reporter sends in its user agent", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    const helper = readFileSync(new URL("../report/smallprint-report.py", import.meta.url), "utf8");
+    expect(/^VERSION = "([^"]+)"$/m.exec(helper)?.[1]).toBe(pkg.version);
+  });
 });

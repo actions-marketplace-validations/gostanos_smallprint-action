@@ -10,9 +10,10 @@ import { createHash, createHmac } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { configLocations } from "./discover";
 import { isBareServerMap, type Host } from "./parse";
 import { claudeCodePlugins, codexPlugins, copilotPlugins, manifestHasServers, pluginManifestPath } from "./plugins";
-import { modModulePath } from "./mods";
+import { modModulePaths } from "./mods";
 
 export interface InstructionLocation {
   host: Host;
@@ -88,25 +89,41 @@ export function instructionLocations(home = homedir(), cwd = process.cwd()): Ins
     { host: "manual", path: join(cwd, ".clinerules"), kind: "Cline .clinerules, project", scope: "project" },
     { host: "manual", path: join(cwd, ".roo", "rules"), kind: "Roo rules file, project", scope: "project", dir: true },
     // the MCP configs themselves: a server's command, args, URL or env changed under the same name
-    { host: "claude-desktop", path: process.platform === "win32" ? join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Claude", "claude_desktop_config.json") : join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), kind: "Claude Desktop MCP servers, home", scope: "home", digest: "mcp-json" },
-    { host: "claude-code", path: join(home, ".claude.json"), kind: "Claude Code MCP servers, home", scope: "home", digest: "mcp-json" },
-    { host: "claude-code", path: join(cwd, ".mcp.json"), kind: "Claude Code MCP servers, project", scope: "project", digest: "mcp-json" },
-    { host: "cursor", path: join(home, ".cursor", "mcp.json"), kind: "Cursor MCP servers, home", scope: "home", digest: "mcp-json" },
-    { host: "cursor", path: join(cwd, ".cursor", "mcp.json"), kind: "Cursor MCP servers, project", scope: "project", digest: "mcp-json" },
-    { host: "windsurf", path: join(home, ".codeium", "windsurf", "mcp_config.json"), kind: "Windsurf MCP servers, home", scope: "home", digest: "mcp-json" },
-    // VS Code, Cline and Roo (tools audit of 29 Sep 2026, fix 10): check listed their servers and the lock never hashed them
-    { host: "vscode", path: join(cwd, ".vscode", "mcp.json"), kind: "VS Code MCP servers, project", scope: "project", digest: "mcp-json" },
-    { host: "vscode", path: vscodeUserMcp(home), kind: "VS Code MCP servers, home", scope: "home", digest: "mcp-json" },
-    { host: "cline", path: vscodeGlobalStorage(home, "saoudrizwan.claude-dev", "cline_mcp_settings.json"), kind: "Cline MCP servers, home", scope: "home", digest: "mcp-json" },
-    { host: "roo", path: vscodeGlobalStorage(home, "rooveterinaryinc.roo-cline", "mcp_settings.json"), kind: "Roo MCP servers, home", scope: "home", digest: "mcp-json" },
-    { host: "roo", path: join(cwd, ".roo", "mcp.json"), kind: "Roo MCP servers, project", scope: "project", digest: "mcp-json" },
-    { host: "codex", path: join(home, ".codex", "config.toml"), kind: "Codex config.toml, home", scope: "home" },
+    ...mcpConfigLocations(home, cwd),
     ...openclaw(join(home, ".openclaw", "workspace")),
     ...openclaw(join(home, "clawd")),
     { host: "openclaw", path: join(home, ".openclaw", "openclaw.json"), kind: "OpenClaw config, home", scope: "home" },
     ...pluginLocations(home, cwd),
   ];
 }
+
+/** How each client is named in a kind label. A client missing here fails the test that walks the table. */
+export const CLIENT_NAME: Partial<Record<Host, string>> = { "claude-desktop": "Claude Desktop", "claude-code": "Claude Code", cursor: "Cursor", windsurf: "Windsurf", codex: "Codex", vscode: "VS Code", zed: "Zed", gemini: "Gemini", cline: "Cline", roo: "Roo" };
+
+/**
+ * The files that hold server definitions, made from the one table of clients (configLocations in discover.ts): every
+ * file the command lists servers from is a file the lock and the change record watch. A JSON config is watched by the
+ * digest of its server definitions, so a settings file that also holds editor preferences (Zed, Gemini) does not read
+ * as changed when a preference moves; Codex's TOML is hashed whole.
+ */
+export function mcpConfigLocations(home = homedir(), cwd = process.cwd()): InstructionLocation[] {
+  return configLocations(home, cwd)
+    .filter((l) => l.format !== "skills-dir")
+    .map((l): InstructionLocation => {
+      const client = CLIENT_NAME[l.host] ?? l.host;
+      return l.format === "codex-toml" ? { host: l.host, path: l.path, kind: `${client} config.toml, ${l.scope}`, scope: l.scope } : { host: l.host, path: l.path, kind: `${client} MCP servers, ${l.scope}`, scope: l.scope, digest: "mcp-json" };
+    });
+}
+
+/**
+ * The kinds of server-definition file this version watches. A lock carries the list (`covers` in lock.ts), so a newer
+ * command that watches one more client reads an older lock as "does not cover that file" and not as "a new file
+ * appeared", and the lock check, the Action and the pre-commit hook do not fail on the day one of them is updated.
+ */
+export const mcpConfigKinds = (): string[] => [...new Set(mcpConfigLocations("/h", "/p").map((l) => l.kind))].sort();
+
+/** The same list as 0.1.7 and earlier had it, for a lock those versions wrote, which carries no list of its own. */
+export const MCP_CONFIG_KINDS_0_1_7: readonly string[] = ["Claude Code MCP servers, home", "Claude Code MCP servers, project", "Claude Desktop MCP servers, home", "Cline MCP servers, home", "Codex config.toml, home", "Cursor MCP servers, home", "Cursor MCP servers, project", "Roo MCP servers, home", "Roo MCP servers, project", "VS Code MCP servers, home", "VS Code MCP servers, project", "Windsurf MCP servers, home"];
 
 const appDataOf = (home: string) => process.env.APPDATA ?? join(home, "AppData", "Roaming");
 
@@ -133,9 +150,8 @@ export function pluginLocations(home = homedir(), cwd = process.cwd()): Instruct
     out.push({ host: "claude-code", path: join(p.root, "hooks", "hooks.json"), kind: "Claude Code plugin hooks, home", scope: "home" });
     out.push({ host: "claude-code", path: join(p.root, "commands"), kind: "Claude Code plugin command, home", scope: "home", dir: true });
     out.push({ host: "claude-code", path: join(p.root, "agents"), kind: "Claude Code plugin agent definition, home", scope: "home", dir: true });
-    // a mod's hooks module, the code Claude Code runs (decision 370): a change to it is reported like a changed CLAUDE.md
-    const mod = modModulePath(p.root);
-    if (mod) out.push({ host: "claude-code", path: mod, kind: "Claude Code mod code, home", scope: "home" });
+    // a mod's code, every module and what they import (decision 370): a change to any of it is reported like a changed CLAUDE.md
+    for (const file of modModulePaths(p.root)) out.push({ host: "claude-code", path: file, kind: "Claude Code mod code, home", scope: "home" });
   }
   // Codex and GitHub Copilot CLI plugins (decision 363): their MCP servers and agent definitions, like a Claude Code plugin's
   for (const p of codexPlugins(home)) {
@@ -194,6 +210,8 @@ export function mcpServersDigest(text: string, key?: string): { sha256: string; 
   if (isBareServerMap(j)) take(j, "");
   take(j.mcpServers, "");
   take(j.servers, "");
+  // Zed keeps its servers under "context_servers"; the command listed them and hashed none until 0.1.8
+  take(j.context_servers, "");
   if (j.projects && typeof j.projects === "object") for (const [path, p] of Object.entries(j.projects as Record<string, { mcpServers?: unknown }>)) take(p?.mcpServers, projectPrefix(path));
   const sections: Record<string, string> = {};
   for (const [name, def] of Object.entries(servers)) sections[name] = sha256(Buffer.from(JSON.stringify(def)));
@@ -428,11 +446,29 @@ export interface FileUploadSet {
 }
 
 /**
+ * Whether this sync also sends the earlier, unkeyed hashes (tools audit of 4 Oct 2026, fix 3). They exist to move a
+ * record that was made before 0.1.6, when path hashes were plain SHA-256, and a plain hash of a path can confirm a
+ * guessed user name or folder. Until 0.1.8 they went out on the first sync of every machine, new ones included, which
+ * had nothing to move. They are sent only when this machine holds the trace of an earlier unkeyed report: scheduled
+ * runs counted in its state file from before its salt file existed (every version that keys its hashes writes the salt
+ * on its first sync, so runs without a salt were unkeyed), or when the person says so with --migrate-unkeyed, for a
+ * machine that only ever synced by hand and so left no trace. Never for a label that already reports keyed hashes.
+ */
+export function sendsFormerHashes(s: { hasKey: boolean; labelKeyed: boolean; saltBefore: boolean; runsBefore: number; asked: boolean }): boolean {
+  if (!s.hasKey || s.labelKeyed) return false;
+  return s.asked || (!s.saltBefore && s.runsBefore > 0);
+}
+
+/** What the command prints, before it asks, on the one sync that sends them. */
+export const FORMER_HASHES_NOTE =
+  "Also sent, this once: this machine reported before path hashes were keyed, so for each instruction file the earlier unkeyed hash of its path (a plain SHA-256 of the full path) is sent beside the keyed one, with the earlier hash of this project folder and of each MCP config. They let the record keep its history under the keyed hashes; smallprint.dev uses them to find the old rows and does not keep them.";
+
+/**
  * What sync sends for the instruction files. With a key, every path hash, project scope and MCP digest is keyed with the
  * machine's salt (security audit of 29 Sep 2026, item 36; tools audit fix 8), so a row cannot confirm a guessed user
- * name, folder or secret. `migrate` is set on the first keyed sync for a machine label: each file then also carries the
- * unkeyed hashes it was recorded under, once, so the record keeps its history instead of reading every file as removed
- * and new. The server uses them only to find the old row and keeps none of them.
+ * name, folder or secret. `migrate` is set only by sendsFormerHashes above: each file then also carries the unkeyed
+ * hashes it was recorded under, once, so the record keeps its history instead of reading every file as removed and new.
+ * The server uses them only to find the old row and keeps none of them.
  */
 export function toFileUpload(files: InstructionFile[], cwd = process.cwd(), key?: string, migrate = false): FileUploadSet {
   const scopes = new Set<string>(["home"]);

@@ -7,14 +7,14 @@
 - id: smallprint-locked
   name: smallprint check --locked
   description: Compares the MCP servers, skills and instruction files here with smallprint.lock, and fails with exit 2 when anything changed. It runs on this machine only and sends nothing.
-  entry: npx -y smallprint@0.1.7 check --locked
+  entry: npx -y smallprint@0.1.8 check --locked
   language: system
   pass_filenames: false
   always_run: true
 - id: smallprint-lock
   name: smallprint lock --project
   description: Writes smallprint.lock for this repository. Run it by hand with "pre-commit run smallprint-lock --hook-stage manual", read the change, and commit it. It asks the record for each server's digest by registry name; add --offline under args to skip that.
-  entry: npx -y smallprint@0.1.7 lock --project
+  entry: npx -y smallprint@0.1.8 lock --project
   language: system
   pass_filenames: false
   always_run: true

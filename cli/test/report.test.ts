@@ -99,7 +99,7 @@ describe("level-four reporter parity", () => {
     expect(imported.sections).toBeUndefined();
   });
 
-  it.skipIf(!existsSync(PY))("sends the same keyed hashes as sync from the same salt, with the unkeyed ones only on the first keyed report (security audit item 36)", () => {
+  it.skipIf(!existsSync(PY))("sends the same keyed hashes as sync from the same salt, and the unkeyed ones only for a label the installer found reporting unkeyed, once (security audit item 36; tools audit of 4 Oct 2026, fix 3)", () => {
     const home = mkdtempSync(join(tmpdir(), "sp-l4-salt-"));
     mkdirSync(join(home, ".claude"), { recursive: true });
     writeFileSync(join(home, ".claude", "CLAUDE.md"), "Be careful.\n");
@@ -108,8 +108,14 @@ describe("level-four reporter parity", () => {
     const saltFile = join(home, "salt");
     writeFileSync(saltFile, key + "\n");
     const keyedFile = join(home, "keyed-labels");
-    const py = (extra: string[] = []) => JSON.parse(execFileSync(PY, [HELPER, "--user", "nobody", "--label", "t", "--json", "--home", home, "--salt-file", saltFile, "--keyed-file", keyedFile, ...extra], { encoding: "utf8" })) as { upload: FileUpload[] };
+    const migrateFile = join(home, "migrate-labels");
+    const py = (extra: string[] = []) => JSON.parse(execFileSync(PY, [HELPER, "--user", "nobody", "--label", "t", "--json", "--home", home, "--salt-file", saltFile, "--keyed-file", keyedFile, "--migrate-file", migrateFile, ...extra], { encoding: "utf8" })) as { upload: FileUpload[] };
     const node = (migrate: boolean) => toFileUpload(readInstructionFiles(home, home, [], key).filter((f) => f.scope === "home"), home, key, migrate).files;
+    // a machine with nothing to move: no unkeyed hash of any path leaves it, on the first report or any other
+    expect(py().upload).toEqual(node(false));
+    expect(JSON.stringify(py().upload)).not.toContain("former");
+    // the installer found an earlier reporter without a salt and wrote the label down: the earlier hashes go once
+    writeFileSync(migrateFile, JSON.stringify(["t"]));
     expect(py().upload).toEqual(node(true));
     expect(py().upload.every((f) => f.formerPathHash === pathHash(join(home, f.kind.includes("MCP") ? ".claude.json" : ".claude/CLAUDE.md")))).toBe(true);
     writeFileSync(keyedFile, JSON.stringify(["t"]));

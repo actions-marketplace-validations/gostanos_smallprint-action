@@ -1,7 +1,7 @@
 {
   "name": "smallprint-mcp",
   "mcpName": "dev.smallprint/smallprint",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": false,
   "description": "Read the Small Print record from inside an agent: an MCP server with four read-only tools for the small print of MCP servers, skills and plugins.",
   "license": "MIT",
@@ -9,11 +9,11 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "build": "tsup",
-    "prepublishOnly": "pnpm build",
+    "prepublishOnly": "node ../../ops/deploy/publish-guard.mjs && pnpm build",
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {

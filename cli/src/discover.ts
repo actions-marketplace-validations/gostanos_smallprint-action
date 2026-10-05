@@ -87,6 +87,8 @@ export interface ConfigLocation {
   host: Host;
   path: string;
   format: "claude-json" | "cursor-json" | "codex-toml" | "skills-dir";
+  /** Under the home directory or under the working directory. The lock and the change record read it (instructions.ts). */
+  scope: "home" | "project";
 }
 
 /** Roo Code's MCP settings in VS Code's global storage, beside Cline's. */
@@ -94,40 +96,45 @@ export function rooHomeSettings(home = homedir(), win = platform() === "win32", 
   return win ? join(appData, "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json") : join(home, "Library", "Application Support", "Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings", "mcp_settings.json");
 }
 
-/** Everything we look for, in order. Paths are best effort per docs/SOURCES.md. */
+/**
+ * Everything we look for, in order. Paths are best effort per docs/SOURCES.md. This is the one table of clients: every
+ * row that holds server definitions is also a file the lock and the change record watch (mcpConfigLocations in
+ * instructions.ts is made from it), so a client cannot be listed here without being locked. Zed and Gemini were listed
+ * and not watched until 0.1.8, because the watched files were a second list kept by hand.
+ */
 export function configLocations(home = homedir(), cwd = process.cwd()): ConfigLocation[] {
   const win = platform() === "win32";
   const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
   return [
-    { host: "claude-desktop", path: win ? join(appData, "Claude", "claude_desktop_config.json") : join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), format: "claude-json" },
-    { host: "claude-code", path: join(home, ".claude.json"), format: "claude-json" },
-    { host: "claude-code", path: join(cwd, ".mcp.json"), format: "claude-json" },
-    { host: "claude-code", path: join(home, ".claude", "skills"), format: "skills-dir" },
-    { host: "claude-code", path: join(cwd, ".claude", "skills"), format: "skills-dir" },
+    { host: "claude-desktop", path: win ? join(appData, "Claude", "claude_desktop_config.json") : join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json"), format: "claude-json", scope: "home" },
+    { host: "claude-code", path: join(home, ".claude.json"), format: "claude-json", scope: "home" },
+    { host: "claude-code", path: join(cwd, ".mcp.json"), format: "claude-json", scope: "project" },
+    { host: "claude-code", path: join(home, ".claude", "skills"), format: "skills-dir", scope: "home" },
+    { host: "claude-code", path: join(cwd, ".claude", "skills"), format: "skills-dir", scope: "project" },
     // the .agents/skills convention (skills.sh and the agents that read it), home and project (decision 224)
-    { host: "manual", path: join(home, ".agents", "skills"), format: "skills-dir" },
-    { host: "manual", path: join(cwd, ".agents", "skills"), format: "skills-dir" },
-    { host: "cursor", path: join(home, ".cursor", "mcp.json"), format: "cursor-json" },
-    { host: "cursor", path: join(cwd, ".cursor", "mcp.json"), format: "cursor-json" },
-    { host: "windsurf", path: join(home, ".codeium", "windsurf", "mcp_config.json"), format: "cursor-json" },
-    { host: "codex", path: join(home, ".codex", "config.toml"), format: "codex-toml" },
-    { host: "codex", path: join(cwd, ".codex", "config.toml"), format: "codex-toml" },
+    { host: "manual", path: join(home, ".agents", "skills"), format: "skills-dir", scope: "home" },
+    { host: "manual", path: join(cwd, ".agents", "skills"), format: "skills-dir", scope: "project" },
+    { host: "cursor", path: join(home, ".cursor", "mcp.json"), format: "cursor-json", scope: "home" },
+    { host: "cursor", path: join(cwd, ".cursor", "mcp.json"), format: "cursor-json", scope: "project" },
+    { host: "windsurf", path: join(home, ".codeium", "windsurf", "mcp_config.json"), format: "cursor-json", scope: "home" },
+    { host: "codex", path: join(home, ".codex", "config.toml"), format: "codex-toml", scope: "home" },
+    { host: "codex", path: join(cwd, ".codex", "config.toml"), format: "codex-toml", scope: "project" },
     // decision 143: the clients agent-bom style tools discover and the lock did not
-    { host: "vscode", path: join(cwd, ".vscode", "mcp.json"), format: "claude-json" },
-    { host: "vscode", path: win ? join(appData, "Code", "User", "mcp.json") : join(home, "Library", "Application Support", "Code", "User", "mcp.json"), format: "claude-json" },
-    { host: "zed", path: join(home, ".config", "zed", "settings.json"), format: "claude-json" },
-    { host: "zed", path: join(cwd, ".zed", "settings.json"), format: "claude-json" },
-    { host: "gemini", path: join(home, ".gemini", "settings.json"), format: "claude-json" },
-    { host: "gemini", path: join(cwd, ".gemini", "settings.json"), format: "claude-json" },
-    { host: "windsurf", path: join(cwd, ".windsurf", "mcp.json"), format: "cursor-json" },
-    { host: "cline", path: win ? join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json") : join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"), format: "claude-json" },
-    { host: "roo", path: join(cwd, ".roo", "mcp.json"), format: "claude-json" },
+    { host: "vscode", path: join(cwd, ".vscode", "mcp.json"), format: "claude-json", scope: "project" },
+    { host: "vscode", path: win ? join(appData, "Code", "User", "mcp.json") : join(home, "Library", "Application Support", "Code", "User", "mcp.json"), format: "claude-json", scope: "home" },
+    { host: "zed", path: join(home, ".config", "zed", "settings.json"), format: "claude-json", scope: "home" },
+    { host: "zed", path: join(cwd, ".zed", "settings.json"), format: "claude-json", scope: "project" },
+    { host: "gemini", path: join(home, ".gemini", "settings.json"), format: "claude-json", scope: "home" },
+    { host: "gemini", path: join(cwd, ".gemini", "settings.json"), format: "claude-json", scope: "project" },
+    { host: "windsurf", path: join(cwd, ".windsurf", "mcp.json"), format: "cursor-json", scope: "project" },
+    { host: "cline", path: win ? join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json") : join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"), format: "claude-json", scope: "home" },
+    { host: "roo", path: join(cwd, ".roo", "mcp.json"), format: "claude-json", scope: "project" },
     // Roo's home settings (tools audit of 29 Sep 2026, fix 10): the README said gate reads them and nothing did
-    { host: "roo", path: rooHomeSettings(home, win, appData), format: "claude-json" },
-    { host: "openclaw", path: join(home, ".openclaw", "skills"), format: "skills-dir" },
-    { host: "openclaw", path: join(home, "clawd", "skills"), format: "skills-dir" },
-    { host: "hermes", path: join(home, ".hermes", "skills"), format: "skills-dir" },
-    { host: "harnos", path: join(home, ".harnos", "skills"), format: "skills-dir" },
+    { host: "roo", path: rooHomeSettings(home, win, appData), format: "claude-json", scope: "home" },
+    { host: "openclaw", path: join(home, ".openclaw", "skills"), format: "skills-dir", scope: "home" },
+    { host: "openclaw", path: join(home, "clawd", "skills"), format: "skills-dir", scope: "home" },
+    { host: "hermes", path: join(home, ".hermes", "skills"), format: "skills-dir", scope: "home" },
+    { host: "harnos", path: join(home, ".harnos", "skills"), format: "skills-dir", scope: "home" },
   ];
 }
 
