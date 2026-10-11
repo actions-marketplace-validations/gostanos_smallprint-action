@@ -2,7 +2,7 @@
   "name": "smallprint-vscode",
   "displayName": "Small Print (MCP)",
   "description": "Watch the MCP servers, skills and instruction files your agents use, and get a notice when what they tell your agent changes. Nothing is sent until you allow it.",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "publisher": "smallprint",
   "license": "MIT",
   "private": true,
@@ -17,7 +17,7 @@
     "vscode": "^1.90.0"
   },
   "categories": [
-    "Other",
+    "AI",
     "Linters"
   ],
   "keywords": [
@@ -27,7 +27,15 @@
     "cursor",
     "agent skills",
     "security",
-    "small print"
+    "small print",
+    "claude.md",
+    "agents.md",
+    "cursor rules",
+    "tool poisoning",
+    "rug pull",
+    "prompt injection",
+    "mcp security",
+    "supply chain"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -113,7 +121,7 @@
           ],
           "default": "ask",
           "scope": "application",
-          "markdownDescription": "Whether the names and versions of your MCP servers may be sent to smallprint.dev to compare them with the public record. Nothing else is ever sent: no config values, no keys, no paths, no file contents. `never` keeps every watch on this machine."
+          "markdownDescription": "Whether the package names of your MCP servers may be sent to smallprint.dev to compare them with the public record. Nothing else is ever sent: no config values, no keys, no paths, no file contents. `never` keeps every watch on this machine."
         },
         "smallprint.notify": {
           "type": "string",

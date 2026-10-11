@@ -9,7 +9,7 @@ Add this to the MCP settings file (for Cline, `cline_mcp_settings.json`):
   "mcpServers": {
     "smallprint": {
       "command": "npx",
-      "args": ["-y", "smallprint-mcp@0.2.6"]
+      "args": ["-y", "smallprint-mcp@1.0.0"]
     }
   }
 }

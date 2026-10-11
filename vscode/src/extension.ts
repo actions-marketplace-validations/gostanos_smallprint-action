@@ -10,7 +10,7 @@ import { discover, type DiscoveredServer, type DiscoveredSkill } from "../../cli
 import { readInstructionFiles, type InstructionFile } from "../../cli/src/instructions";
 import { DEFAULT_BASE, evaluateLocal, evaluateServer, notifies, safeBase, userSetting, type Finding, type RecordEntry, type ServerState } from "./core";
 
-const VERSION = "0.1.2";
+const VERSION = "1.0.0";
 const LOCAL_SCAN_MS = 10 * 60_000;
 const OWN_SAVE_MS = 15_000;
 

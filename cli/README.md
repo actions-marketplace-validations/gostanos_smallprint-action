@@ -3,13 +3,13 @@
 The thin, open client for [Small Print](https://smallprint.dev): find the MCP servers and agent skills your agents have installed, see what the advisory databases have on record for them, and get a grade with the rule printed next to it.
 
 ```
-npx smallprint@0.1.8 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
+npx smallprint@1.0.0 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
 npx smallprint check            # discover and print; asks before it sends anything, then grades; then one question: watch these every morning?
 npx smallprint check --upload   # answer the send question up front (a script or CI has no terminal to ask in, so without it nothing is sent)
 npx smallprint check --email you@company.com   # answer it up front; --no-signup never asks
 npx smallprint check --share    # also get a card link you can post
 npx smallprint check --json     # machine-readable inventory, nothing sent; says so in itself (about, sent) and names its fields at https://smallprint.dev/cli#json
-npx smallprint@0.1.8 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
+npx smallprint@1.0.0 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
 npx smallprint check --live          # ask your hosted servers what they serve now, and compare with the record for their version
 npx smallprint check --live-local    # the same for local servers too; shows the commands it will start and asks first, and never calls a tool; it starts them with the keys in your config, so keep production credentials out of that config
 npx smallprint show npm/mcp-remote   # the record for one entry: baseline, how it was read, advisories, last releases
@@ -46,6 +46,12 @@ Claude Code mods, plugins whose code runs inside Claude Code, are listed with wh
 
 MIT. Everything clever lives on the server.
 
+## What 1.0 holds stable
+
+From 1.0.0, these do not change without a new major version: the commands `check`, `show`, `sync`, `schedule`, `lock` and `gate` and their flags; the shape of `check --json` and of the SARIF log; the lock file written by `lock` and read by `check --locked`; what leaves your machine, as listed above; and the four tools of the MCP server, their names and their inputs. A flag or a field can be added in a minor version; nothing listed here is removed or renamed in one.
+
+What can change in any version, with a dated entry in the record's decisions: the grading rules, since a grade describes the text and the rules are printed at https://smallprint.dev/how-we-grade; which sources the record reads; and the wording of messages.
+
 ## Lock the small print, and fail the build when it changes
 
 ```
@@ -62,7 +68,7 @@ With [pre-commit](https://pre-commit.com), the same check runs before every comm
 ```yaml
 repos:
   - repo: https://github.com/gostanos/smallprint-action
-    rev: v1.10
+    rev: v1.11
     hooks:
       - id: smallprint-locked   # runs smallprint check --locked; the commit stops when anything differs from the lock
       - id: smallprint-lock     # only when you ask: pre-commit run smallprint-lock --hook-stage manual

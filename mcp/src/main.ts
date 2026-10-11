@@ -18,7 +18,7 @@ import { plural, readKind } from "./record";
 import { QUOTING_RULE, quoter, type Quoter } from "./quote";
 
 /** The package's version, said in the server's name and in its user agent; test/version.test.ts holds it to package.json and server.json. */
-export const VERSION = "0.2.6";
+export const VERSION = "1.0.0";
 const BASE = (process.env.SMALLPRINT_BASE_URL ?? "https://smallprint.dev").replace(/\/$/, "");
 const UA = `smallprint-mcp/${VERSION} (+https://smallprint.dev)`;
 

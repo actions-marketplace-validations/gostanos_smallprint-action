@@ -1,9 +1,9 @@
 {
   "name": "smallprint-mcp",
   "mcpName": "dev.smallprint/smallprint",
-  "version": "0.2.6",
+  "version": "1.0.0",
   "private": false,
-  "description": "Read the Small Print record from inside an agent: an MCP server with four read-only tools for the small print of MCP servers, skills and plugins.",
+  "description": "Ask before your agent uses an MCP server, skill or plugin: what its tool text said in each version, what changed, and which advisories name it. Four read-only tools.",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -39,7 +39,16 @@
     "model-context-protocol",
     "mcp-server",
     "agent-skills",
-    "supply-chain"
+    "supply-chain",
+    "security",
+    "mcp-security",
+    "tool-poisoning",
+    "rug-pull",
+    "prompt-injection",
+    "drift-detection",
+    "skills-security",
+    "claude-code",
+    "cursor"
   ],
   "repository": {
     "type": "git",
