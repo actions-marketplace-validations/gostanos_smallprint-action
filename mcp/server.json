@@ -7,7 +7,7 @@
     "source": "github",
     "subfolder": "mcp"
   },
-  "description": "Check an MCP server, skill or plugin before your agent uses it: every version's tool text on record, each change diffed and graded by a printed rule, advisories matched to versions. Four read-only tools.",
+  "description": "Check an MCP server, skill or plugin before your agent uses it: tool text on record, changes graded.",
   "websiteUrl": "https://smallprint.dev",
   "version": "1.0.0",
   "packages": [
