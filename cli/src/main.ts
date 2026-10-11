@@ -55,7 +55,7 @@ const systemMode = args[0] === "schedule" && args.includes("--system");
 const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BASE_URL) ?? "https://smallprint.dev").replace(/\/$/, "");
 {
   // uploads carry a bearer token: plain http is allowed only to this machine
-  let u: URL | null = null;
+  let u: URL | null;
   try {
     u = new URL(base);
   } catch {
@@ -576,7 +576,7 @@ async function sync(): Promise<number> {
     return 0;
   }
   if (!token) {
-    console.error(`\nNo token. Make one on your brief settings page, then: SMALLPRINT_TOKEN=sp_... npx smallprint sync --label \"work laptop\"\nOr keep it in ${tokenFile()} (chmod 600) and leave the environment alone.`);
+    console.error(`\nNo token. Make one on your brief settings page, then: SMALLPRINT_TOKEN=sp_... npx smallprint sync --label "work laptop"\nOr keep it in ${tokenFile()} (chmod 600) and leave the environment alone.`);
     return 2;
   }
   if (!flag("yes")) {
@@ -914,7 +914,7 @@ async function schedule(): Promise<number> {
   }
   const token = readToken();
   if (!token || !/^sp_[0-9a-f]{48}$/.test(token)) {
-    console.error(`No token. Make one on your brief settings page, then: SMALLPRINT_TOKEN=sp_... npx smallprint schedule --install --label \"work laptop\" (or keep it in ${tokenFile()}, chmod 600)`);
+    console.error(`No token. Make one on your brief settings page, then: SMALLPRINT_TOKEN=sp_... npx smallprint schedule --install --label "work laptop" (or keep it in ${tokenFile()}, chmod 600)`);
     return 2;
   }
   const label = (opt("label") ?? hostname()).slice(0, 60);

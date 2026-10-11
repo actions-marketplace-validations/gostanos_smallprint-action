@@ -79,7 +79,7 @@ WantedBy=timers.target
 
 export function schtasksCommand(p: SchedulePlan): string {
   const hours = Math.max(1, Math.round(p.everySeconds / 3600));
-  return `schtasks /Create /TN "Small Print sync" /SC HOURLY /MO ${hours} /TR "cmd /c set SMALLPRINT_TOKEN=${p.token}&& \"${join(p.nodeDir, "npx.cmd")}\" -y smallprint@${p.version} sync --yes --quiet --scheduled --label \"${p.label}\""`;
+  return `schtasks /Create /TN "Small Print sync" /SC HOURLY /MO ${hours} /TR "cmd /c set SMALLPRINT_TOKEN=${p.token}&& "${join(p.nodeDir, "npx.cmd")}" -y smallprint@${p.version} sync --yes --quiet --scheduled --label "${p.label}""`;
 }
 
 export function schedulePlan(opts: { platform?: NodeJS.Platform; home: string; execPath: string; version: string; label: string; token: string; everyHours?: number }): SchedulePlan {

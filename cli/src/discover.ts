@@ -129,6 +129,8 @@ export function configLocations(home = homedir(), cwd = process.cwd()): ConfigLo
     { host: "windsurf", path: join(cwd, ".windsurf", "mcp.json"), format: "cursor-json", scope: "project" },
     { host: "cline", path: win ? join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json") : join(home, "Library", "Application Support", "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"), format: "claude-json", scope: "home" },
     { host: "roo", path: join(cwd, ".roo", "mcp.json"), format: "claude-json", scope: "project" },
+    // Cline's project-level server list (decision 445; the competitor's discovery reads it and the lock did not)
+    { host: "cline", path: join(cwd, ".cline", "mcp.json"), format: "claude-json", scope: "project" },
     // Roo's home settings (tools audit of 29 Sep 2026, fix 10): the README said gate reads them and nothing did
     { host: "roo", path: rooHomeSettings(home, win, appData), format: "claude-json", scope: "home" },
     { host: "openclaw", path: join(home, ".openclaw", "skills"), format: "skills-dir", scope: "home" },
@@ -196,7 +198,21 @@ export function readSkillsDir(host: Host, root: string, errors: string[] = []): 
       }
       if (!st.isDirectory()) continue;
       const s = readSkillDir(host, dir);
-      if (s) out.push(s);
+      if (s) { out.push(s); continue; }
+      // a group folder (decision 445): no SKILL.md of its own, skill folders one level down, as the competitor's pins
+      // and the skill registries both allow; deeper than that nothing is read, and a file loose in the group is not a skill
+      for (const inner of readdirSync(dir).sort()) {
+        const sub = join(dir, inner);
+        try {
+          const ss = lstatSync(sub);
+          if (ss.isSymbolicLink()) { errors.push(`${sub}: skipped, symbolic link`); continue; }
+          if (!ss.isDirectory()) continue;
+          const nested = readSkillDir(host, sub);
+          if (nested) out.push(nested);
+        } catch (err) {
+          errors.push(`${sub}: skipped, ${err instanceof SkillTooLarge ? err.message : ((err as NodeJS.ErrnoException).code ?? "unreadable")}`);
+        }
+      }
     } catch (err) {
       errors.push(`${dir}: skipped, ${err instanceof SkillTooLarge ? err.message : ((err as NodeJS.ErrnoException).code ?? "unreadable")}`);
     }
