@@ -1,11 +1,12 @@
 /**
  * What the extension decides, with no editor in it, so every rule is tested without VS Code. Three watches:
  *  - an MCP server with a package identity: the public record's releases and advisories for it, once the person allowed
- *    the lookup (names and versions only, one request per server, the same request `smallprint gate` makes);
+ *    the lookup (the package name only, one request per server, the same request `smallprint gate` makes);
  *  - a skill: its files, hashed on this machine, compared with the last time;
  *  - an instruction file (CLAUDE.md, AGENTS.md, an .mcp.json, rules): hashed on this machine, compared with the last time.
  */
-import { compareVersions, inRange } from "./range";
+// the command's range rule, the one implementation (packages/cli/src/range.ts), bundled in like its discovery code
+import { compareVersions, inRange } from "../../cli/src/range";
 
 export type Grade = "critical" | "high" | "medium" | "low" | "info";
 const RANK: Record<string, number> = { critical: 5, high: 4, medium: 3, low: 2, info: 1 };

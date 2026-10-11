@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_BASE, evaluateLocal, evaluateServer, notifies, safeBase, userSetting, type Inspected, type RecordEntry } from "../src/core";
 import { readFileSync } from "node:fs";
-import { inRange as extRange } from "../src/range";
-import { inRange as siteRange } from "../../../apps/web/src/lib/tie";
 
 const entry = (over: Partial<RecordEntry> = {}): RecordEntry => ({
   asset: { canonicalName: "npm:@modelcontextprotocol/server-filesystem", displayName: "fs", latestVersion: "2026.7.10", url: "https://smallprint.dev/a/npm/fs" },
@@ -62,10 +60,12 @@ describe("local watches", () => {
   });
 });
 
-describe("the version-range rule is the site's", () => {
-  it("answers exactly as apps/web/src/lib/tie.ts does", () => {
-    const cases: [string, string][] = [["0.1.15", ">=0.0.5 <0.1.16"], ["0.1.16", ">=0.0.5 <0.1.16"], ["2025.7.2", "<=0.6.2 || >=2025.1.14 <2025.7.1"], ["1.0.0", "*"], ["1.0.0", "garbage"], ["v2.0.0-beta", ">=2.0.0"], ["3", "=3.0.0"]];
-    for (const [v, r] of cases) expect(extRange(v, r)).toBe(siteRange(v, r));
+describe("the version-range rule is the command's", () => {
+  it("is imported from packages/cli/src/range.ts, the one implementation, and reads an exact-version list", () => {
+    expect(readFileSync(new URL("../src/core.ts", import.meta.url), "utf8")).toContain('from "../../cli/src/range"');
+    const malware = entry({ advisories: [{ id: "MAL-1", severity: "critical", versionRange: "0.0.0, 0.0.1", summary: "Malicious code.", url: "https://smallprint.dev/advisory/MAL-1" }] });
+    expect(evaluateServer("k", "pkg", "0.0.1", malware, undefined).findings.some((f) => f.kind === "advisory")).toBe(true);
+    expect(evaluateServer("k", "pkg", "0.0.2", malware, undefined).findings.some((f) => f.kind === "advisory")).toBe(false);
   });
 });
 
