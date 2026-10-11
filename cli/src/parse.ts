@@ -13,7 +13,7 @@ const PYPI_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 const VERSION_SHAPE = /^[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}$/;
 const cleanVersion = (v: string | null | undefined): string | null => (v && VERSION_SHAPE.test(v) ? v : null);
 const SECRET_KEY = /(key|token|secret|password|passwd|credential|auth)/i;
-const SECRET_VALUE = /^(sk-|ghp_|github_pat_|xox[abp]-|AKIA|AIza|-----BEGIN)|^[A-Za-z0-9_\-]{32,}$/;
+const SECRET_VALUE = /^(sk-|ghp_|github_pat_|xox[abp]-|AKIA|AIza|-----BEGIN)|^[A-Za-z0-9_-]{32,}$/;
 
 export interface DiscoveredServer {
   kind: "mcp";

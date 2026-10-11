@@ -24,6 +24,10 @@ export interface InstructionLocation {
   scope: "home" | "project";
   /** A directory whose files are each recorded (Cursor and Windsurf rules folders). */
   dir?: boolean;
+  /** For a directory: also walk its subfolders, this many levels down (decision 445; until then every folder was read flat and a nested rule was never hashed). */
+  deep?: number;
+  /** For a directory: keep only files with these extensions (a client folder that also holds state, caches or binaries). */
+  ext?: readonly string[];
   /** MCP config files: hash the server definitions, not the raw file, so a state-heavy file like ~/.claude.json does not move every run and env values are hashed rather than the text that holds them. */
   digest?: "mcp-json";
 }
@@ -61,6 +65,10 @@ export type InstructionStatus =
 
 const FILE_MAX_BYTES = 5_000_000;
 const DIR_MAX_FILES = 200;
+/** How far down a rules or commands folder is walked (decision 445): four levels, the depth the competitor's pins walk, enough for group/skill/file layouts. */
+export const DIR_DEPTH = 4;
+/** The text a client reads from a folder that also holds state: rules, prompts, settings and the scripts they name. */
+export const TEXT_EXT: readonly string[] = [".md", ".mdc", ".txt", ".yaml", ".yml", ".json", ".sh", ".py", ".js", ".ts"];
 
 export function instructionLocations(home = homedir(), cwd = process.cwd()): InstructionLocation[] {
   const openclaw = (root: string): InstructionLocation[] => ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "MEMORY.md"].map((f) => ({ host: "openclaw" as const, path: join(root, f), kind: `OpenClaw ${f}, home`, scope: "home" as const }));
@@ -75,19 +83,39 @@ export function instructionLocations(home = homedir(), cwd = process.cwd()): Ins
     { host: "codex", path: join(home, ".codex", "AGENTS.md"), kind: "Codex AGENTS.md, home", scope: "home" },
     { host: "codex", path: join(cwd, "AGENTS.md"), kind: "Codex AGENTS.md, project", scope: "project" },
     { host: "cursor", path: join(cwd, ".cursorrules"), kind: "Cursor .cursorrules, project", scope: "project" },
-    { host: "cursor", path: join(cwd, ".cursor", "rules"), kind: "Cursor rules file, project", scope: "project", dir: true },
+    // rules, commands and agent folders are walked four levels down (decision 445): a rule in .cursor/rules/backend/x.mdc
+    // or a command in .claude/commands/db/migrate.md is read by the client and was never hashed while folders were flat
+    { host: "cursor", path: join(cwd, ".cursor", "rules"), kind: "Cursor rules file, project", scope: "project", dir: true, deep: DIR_DEPTH },
+    { host: "cursor", path: join(home, ".cursor", "rules"), kind: "Cursor rules file, home", scope: "home", dir: true, deep: DIR_DEPTH },
     { host: "windsurf", path: join(home, ".codeium", "windsurf", "memories", "global_rules.md"), kind: "Windsurf global rules, home", scope: "home" },
     { host: "windsurf", path: join(cwd, ".windsurfrules"), kind: "Windsurf .windsurfrules, project", scope: "project" },
-    { host: "windsurf", path: join(cwd, ".windsurf", "rules"), kind: "Windsurf rules file, project", scope: "project", dir: true },
-    { host: "claude-code", path: join(home, ".claude", "agents"), kind: "Claude Code agent definition, home", scope: "home", dir: true },
-    { host: "claude-code", path: join(cwd, ".claude", "agents"), kind: "Claude Code agent definition, project", scope: "project", dir: true },
-    { host: "claude-code", path: join(home, ".claude", "commands"), kind: "Claude Code command, home", scope: "home", dir: true },
-    { host: "claude-code", path: join(cwd, ".claude", "commands"), kind: "Claude Code command, project", scope: "project", dir: true },
+    { host: "windsurf", path: join(cwd, ".windsurf", "rules"), kind: "Windsurf rules file, project", scope: "project", dir: true, deep: DIR_DEPTH },
+    { host: "windsurf", path: join(home, ".windsurf", "rules"), kind: "Windsurf rules file, home", scope: "home", dir: true, deep: DIR_DEPTH },
+    { host: "claude-code", path: join(home, ".claude", "agents"), kind: "Claude Code agent definition, home", scope: "home", dir: true, deep: DIR_DEPTH },
+    { host: "claude-code", path: join(cwd, ".claude", "agents"), kind: "Claude Code agent definition, project", scope: "project", dir: true, deep: DIR_DEPTH },
+    { host: "claude-code", path: join(home, ".claude", "commands"), kind: "Claude Code command, home", scope: "home", dir: true, deep: DIR_DEPTH },
+    { host: "claude-code", path: join(cwd, ".claude", "commands"), kind: "Claude Code command, project", scope: "project", dir: true, deep: DIR_DEPTH },
     { host: "manual", path: join(cwd, ".github", "copilot-instructions.md"), kind: "Copilot instructions, project", scope: "project" },
     { host: "manual", path: join(home, ".gemini", "GEMINI.md"), kind: "Gemini GEMINI.md, home", scope: "home" },
     { host: "manual", path: join(cwd, "GEMINI.md"), kind: "Gemini GEMINI.md, project", scope: "project" },
+    // .clinerules is a file in older projects and a folder of rule files in newer ones: both rows, each reads its own shape
     { host: "manual", path: join(cwd, ".clinerules"), kind: "Cline .clinerules, project", scope: "project" },
-    { host: "manual", path: join(cwd, ".roo", "rules"), kind: "Roo rules file, project", scope: "project", dir: true },
+    { host: "manual", path: join(cwd, ".clinerules"), kind: "Cline rules file, project", scope: "project", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
+    { host: "manual", path: join(cwd, ".roo", "rules"), kind: "Roo rules file, project", scope: "project", dir: true, deep: DIR_DEPTH },
+    // the locations the competitor's pins walk and the lock did not (decision 445, from a line-by-line comparison on
+    // 11 Oct 2026): client folders that hold rules, prompts, agents and the scripts they name beside state the client
+    // moves on its own, so only text files are kept, four levels down
+    { host: "manual", path: join(cwd, "CONVENTIONS.md"), kind: "Aider CONVENTIONS.md, project", scope: "project" },
+    { host: "manual", path: join(home, ".continue", "rules"), kind: "Continue rules file, home", scope: "home", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
+    { host: "manual", path: join(cwd, ".continue", "rules"), kind: "Continue rules file, project", scope: "project", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
+    { host: "manual", path: join(cwd, ".cline"), kind: "Cline file, project", scope: "project", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
+    { host: "manual", path: join(cwd, ".kiro"), kind: "Kiro file, project", scope: "project", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
+    { host: "manual", path: join(cwd, ".amp"), kind: "Amp file, project", scope: "project", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
+    { host: "manual", path: join(cwd, ".opencode"), kind: "OpenCode file, project", scope: "project", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
+    { host: "manual", path: join(cwd, ".antigravity"), kind: "Antigravity file, project", scope: "project", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
+    { host: "manual", path: join(cwd, ".devin"), kind: "Devin file, project", scope: "project", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
+    // Codex's project folder beyond config.toml (which mcpConfigLocations reads as server definitions; .toml is not a text extension here, so it is not read twice)
+    { host: "codex", path: join(cwd, ".codex"), kind: "Codex file, project", scope: "project", dir: true, deep: DIR_DEPTH, ext: TEXT_EXT },
     // the MCP configs themselves: a server's command, args, URL or env changed under the same name
     ...mcpConfigLocations(home, cwd),
     ...openclaw(join(home, ".openclaw", "workspace")),
@@ -121,6 +149,24 @@ export function mcpConfigLocations(home = homedir(), cwd = process.cwd()): Instr
  * appeared", and the lock check, the Action and the pre-commit hook do not fail on the day one of them is updated.
  */
 export const mcpConfigKinds = (): string[] => [...new Set(mcpConfigLocations("/h", "/p").map((l) => l.kind))].sort();
+
+/** The plugin file kinds, which only appear on a machine with plugins installed and so cannot be read off the location list. */
+/** The kinds given to a file a CLAUDE.md imports: the importing file's kind with " import" before its scope, made at read time, so listed here by hand. */
+const IMPORT_KINDS: readonly string[] = ["Claude Code CLAUDE.md import, home", "Claude Code CLAUDE.md import, project", "Claude Code CLAUDE.local.md import, project", "Claude Code .claude/CLAUDE.md import, project"];
+
+const PLUGIN_KINDS: readonly string[] = ["Claude Code plugin MCP servers, home", "Claude Code plugin hooks, home", "Claude Code plugin command, home", "Claude Code plugin agent definition, home", "Claude Code mod code, home", "Codex plugin MCP servers, home", "Codex plugin agent definition, home", "Copilot plugin MCP servers, home", "Copilot plugin agent definition, home"];
+
+/** Every kind of file this command reads, server definitions included: what a lock written now lists as covered (decision 445). */
+export const allFileKinds = (): string[] => [...new Set([...instructionLocations("/h", "/p").map((l) => l.kind), ...PLUGIN_KINDS, ...IMPORT_KINDS, ...mcpConfigKinds()])].sort();
+
+/**
+ * Every kind of instruction, settings, agent, command and plugin file the 1.0.0 command read (listed from its own
+ * location list on 11 Oct 2026), frozen here: a lock written by 1.0.0 or earlier lists only server-definition kinds
+ * under `covers`, and these are the kinds it covered all the same. A kind added after 1.0.0 is not here, so a file of
+ * that kind is "not covered" by such a lock rather than NEW, and the build it gates does not fail on the day the
+ * command updates (decision 445).
+ */
+export const KINDS_1_0_0: readonly string[] = ["Claude Code .claude/CLAUDE.md, project", "Claude Code CLAUDE.local.md, project", "Claude Code CLAUDE.md, home", "Claude Code CLAUDE.md, project", "Claude Code agent definition, home", "Claude Code agent definition, project", "Claude Code command, home", "Claude Code command, project", "Claude Code settings.json, home", "Claude Code settings.json, project", "Claude Code settings.local.json, project", "Cline .clinerules, project", "Codex AGENTS.md, home", "Codex AGENTS.md, project", "Copilot instructions, project", "Cursor .cursorrules, project", "Cursor rules file, project", "Gemini GEMINI.md, home", "Gemini GEMINI.md, project", "OpenClaw AGENTS.md, home", "OpenClaw BOOTSTRAP.md, home", "OpenClaw HEARTBEAT.md, home", "OpenClaw IDENTITY.md, home", "OpenClaw MEMORY.md, home", "OpenClaw SOUL.md, home", "OpenClaw TOOLS.md, home", "OpenClaw USER.md, home", "OpenClaw config, home", "Roo rules file, project", "Windsurf .windsurfrules, project", "Windsurf global rules, home", "Windsurf rules file, project", ...PLUGIN_KINDS, ...IMPORT_KINDS];
 
 /** The same list as 0.1.7 and earlier had it, for a lock those versions wrote, which carries no list of its own. */
 export const MCP_CONFIG_KINDS_0_1_7: readonly string[] = ["Claude Code MCP servers, home", "Claude Code MCP servers, project", "Claude Desktop MCP servers, home", "Cline MCP servers, home", "Codex config.toml, home", "Cursor MCP servers, home", "Cursor MCP servers, project", "Roo MCP servers, home", "Roo MCP servers, project", "VS Code MCP servers, home", "VS Code MCP servers, project", "Windsurf MCP servers, home"];
@@ -346,11 +392,25 @@ export function readInstructionFiles(home = homedir(), cwd = resolve(process.cwd
       if (loc.dir) {
         const st = lstatSync(loc.path);
         if (!st.isDirectory()) continue;
-        const names = readdirSync(loc.path).sort().slice(0, DIR_MAX_FILES);
-        for (const name of names) {
-          if (name.startsWith(".")) continue;
-          push(readOne(loc, join(loc.path, name), false, key));
-        }
+        // the folder's files, and with `deep` its subfolders' files too, at most DIR_MAX_FILES in all; dotfiles and
+        // symbolic links are skipped at every level, as the flat read always skipped them
+        let left = DIR_MAX_FILES;
+        const walk = (dir: string, depth: number) => {
+          for (const name of readdirSync(dir).sort()) {
+            if (left <= 0) return;
+            if (name.startsWith(".")) continue;
+            const p = join(dir, name);
+            const s = lstatSync(p);
+            if (s.isDirectory()) {
+              if (loc.deep && depth < loc.deep) walk(p, depth + 1);
+              continue;
+            }
+            if (loc.ext && !loc.ext.some((e) => name.endsWith(e))) continue;
+            left--;
+            push(readOne(loc, p, false, key));
+          }
+        };
+        walk(loc.path, 1);
       } else if (push(readOne(loc, loc.path, false, key))) {
         followImports(loc, loc.path, 1);
       }

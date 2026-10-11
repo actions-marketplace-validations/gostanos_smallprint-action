@@ -18,7 +18,7 @@ const TSX = pathToFileURL(join(fileURLToPath(new URL("..", import.meta.url)), "n
 describe("the plugin's lock", () => {
   it("matches the plugin's configuration, as the public repository's daily check reads it", () => {
     const home = mkdtempSync(join(tmpdir(), "sp-plugin-lock-"));
-    let out = "", code = 0;
+    let out: string, code = 0;
     try {
       out = execFileSync(process.execPath, ["--import", TSX, MAIN, "check", "--locked", "--no-upload", "--no-signup"], { cwd: PLUGIN, env: { PATH: process.env.PATH ?? "", HOME: home, XDG_CONFIG_HOME: join(home, ".config") }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     } catch (err) {

@@ -17,7 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ask, readAssetReply, readCheckReply, readSyncReply, UnexpectedReply } from "../src/ask";
 import { configLocations, discover, toUpload } from "../src/discover";
 import { gateExit, gateServer, type GateRecord } from "../src/gate";
-import { CLIENT_NAME, instructionLocations, MCP_CONFIG_KINDS_0_1_7, mcpConfigKinds, mcpConfigLocations, readInstructionFiles, sendsFormerHashes, toFileUpload } from "../src/instructions";
+import { allFileKinds, CLIENT_NAME, instructionLocations, KINDS_1_0_0, MCP_CONFIG_KINDS_0_1_7, mcpConfigKinds, mcpConfigLocations, readInstructionFiles, sendsFormerHashes, toFileUpload } from "../src/instructions";
 import { buildLock, diffIsEmpty, diffLock, formatNotCompared, parseLock } from "../src/lock";
 import { findMods, modModulePaths } from "../src/mods";
 import { parseClaudeJson } from "../src/parse";
@@ -140,7 +140,7 @@ describe("the earlier unkeyed path hashes (fix 3)", () => {
     writeFileSync(join(home, ".claude", "CLAUDE.md"), "Be careful.\n");
     writeFileSync(join(cwd, "CLAUDE.md"), "Project rules.\n");
     if (state) writeFileSync(join(home, ".config", "smallprint", "state.json"), JSON.stringify(state));
-    let out = "";
+    let out: string;
     try {
       out = execFileSync(process.execPath, ["--import", TSX, MAIN, "sync", "--label", "t", "--dry-run", ...args], { cwd, env: { PATH: process.env.PATH ?? "", HOME: home, XDG_CONFIG_HOME: join(home, ".config") }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     } catch (err) {
@@ -361,7 +361,22 @@ describe("a lock and a command one version apart (fix 2)", () => {
   it("the list for 0.1.7 is what 0.1.7 watched, and every kind in it is still watched", () => {
     expect(MCP_CONFIG_KINDS_0_1_7).toHaveLength(12);
     for (const k of MCP_CONFIG_KINDS_0_1_7) expect(mcpConfigKinds()).toContain(k);
-    expect(buildLock([], [], {}).covers).toEqual(mcpConfigKinds());
+    // since decision 445 a lock lists every kind it covers, the server-definition kinds among them
+    const covers = buildLock([], [], {}).covers!;
+    for (const k of mcpConfigKinds()) expect(covers).toContain(k);
+    expect(covers).toEqual(allFileKinds());
+  });
+
+  it("a lock from 1.0.0 lists only server-definition kinds, and a kind added after 1.0.0 is not NEW against it (decision 445)", () => {
+    const file = (kind: string, path: string, sha256: string) => ({ host: "manual" as const, path, kind, scope: "project" as const, sha256, bytes: 1 });
+    const old = buildLock([], [file("Claude Code CLAUDE.md, project", "/p/CLAUDE.md", "a".repeat(64))], {});
+    old.covers = [...MCP_CONFIG_KINDS_0_1_7]; // what 1.0.0 wrote
+    const now = buildLock([], [file("Claude Code CLAUDE.md, project", "/p/CLAUDE.md", "b".repeat(64)), file("Kiro file, project", "/p/.kiro/steering/x.md", "c".repeat(64))], {});
+    const d = diffLock(old, now);
+    expect(d.filesChanged.map((f) => f.path)).toEqual(["/p/CLAUDE.md"]); // a 1.0.0 kind is still compared
+    expect(d.filesNew).toEqual([]); // the Kiro file is not NEW against a lock that could not have listed it
+    expect(d.filesNotCovered.map((f) => f.path)).toEqual(["/p/.kiro/steering/x.md"]);
+    for (const k of KINDS_1_0_0) expect(allFileKinds()).toContain(k); // nothing the 1.0.0 command read has been dropped
   });
 });
 

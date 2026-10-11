@@ -5,9 +5,15 @@
 // Method, as the API prints it: entries_hash = sha256 of the lines "canonical_name<TAB>version<TAB>content_hash<LF>"
 // sorted by name then version, as UTF-8 bytes; chain_hash = sha256 of prev_hash + LF + day + LF + through_at + LF +
 // entries_hash; the first prev_hash is 64 zeros; signature = Ed25519 over the UTF-8 bytes of chain_hash, base64.
+// One version instead of every row: node verify-chain.mjs [https://smallprint.dev] npm:@scope/name@1.2.3
+// That fetches the version's receipt, the one day that kept its line, the row index and the key: four requests. It
+// checks that the kept line is among the day's lines, that the day's entries_hash recomputes from them, that the row's
+// chain_hash recomputes and links forward to the newest row, and that the row's signature verifies.
 import { createHash, createPublicKey, verify } from "node:crypto";
 
-const base = (process.argv[2] ?? "https://smallprint.dev").replace(/\/$/, "");
+const args = process.argv.slice(2);
+const one = args.find((a) => /^[a-z0-9-]+:.+@[^@]+$/.test(a));
+const base = (args.find((a) => a !== one) ?? "https://smallprint.dev").replace(/\/$/, "");
 const ua = { headers: { "user-agent": "smallprint-verify-chain/2 (+https://smallprint.dev)" } };
 const sha256 = (s) => createHash("sha256").update(s, "utf8").digest("hex");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -22,6 +28,45 @@ async function get(path) {
   }
 }
 const bytes = (a, b) => Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+const lineOf = (l) => `${l.canonicalName}\t${l.version}\t${l.contentHash}\n`;
+const entriesOf = (lines) => sha256([...lines].sort((a, b) => bytes(a.canonicalName, b.canonicalName) || bytes(a.version, b.version)).map(lineOf).join(""));
+const chainHashOf = (r) => sha256(`${r.prevHash}\n${r.day}\n${r.throughAt}\n${r.entriesHash}`);
+
+if (one) {
+  // registry:name@version: the receipt names the row that kept the line, the day serves the lines, the index links it forward
+  const at = one.lastIndexOf("@");
+  const canonicalName = one.slice(0, at), version = one.slice(at + 1);
+  const colon = canonicalName.indexOf(":");
+  const path = `/api/receipt/${encodeURIComponent(canonicalName.slice(0, colon))}/${canonicalName.slice(colon + 1).split("/").map(encodeURIComponent).join("/")}/${encodeURIComponent(version)}`;
+  const res = await get(path);
+  if (!res.ok) { console.log(`FAIL ${canonicalName} ${version}: the receipt answered HTTP ${res.status}`); process.exit(1); }
+  const receipt = await res.json();
+  let ok = true;
+  const say = (good, text) => { ok = ok && good; console.log(`${good ? "ok  " : "FAIL"} ${text}`); };
+  if (!receipt.chain || !receipt.keptLine) {
+    console.log(`n/a  ${canonicalName} ${version}: ${receipt.chainStateNote ?? "no signed row covers this version yet"}`);
+    process.exit(2);
+  }
+  const want = { canonicalName: receipt.canonicalName, version: receipt.version, contentHash: receipt.contentHash };
+  say(lineOf(want) === receipt.keptLine, `${version}: the kept line is "${canonicalName}<TAB>${version}<TAB>${receipt.contentHash}"`);
+  const day = await (await get(`/api/chain/${receipt.chain.day}`)).json();
+  say(day.lines.some((l) => lineOf(l) === receipt.keptLine), `${receipt.chain.day}: the line is among the ${day.lines.length} lines served with the row`);
+  say(entriesOf(day.lines) === day.row.entriesHash && day.lines.length === day.row.versions, `${receipt.chain.day}: entries_hash recomputes from the lines`);
+  say(chainHashOf(day.row) === day.row.chainHash && day.row.chainHash === receipt.chain.chainHash, `${receipt.chain.day}: chain_hash recomputes and is the one the receipt names`);
+  const index = await (await get("/api/chain")).json();
+  const rows = [...index.rows].sort((a, b) => (a.day < b.day ? -1 : 1));
+  let prev = day.row.chainHash, linked = 0;
+  for (const r of rows.filter((r) => r.day > day.row.day)) { if (r.prevHash !== prev || chainHashOf(r) !== r.chainHash) { linked = -1; break; } prev = r.chainHash; linked++; }
+  say(linked >= 0, `${receipt.chain.day}: links forward through ${Math.max(linked, 0)} later row${linked === 1 ? "" : "s"} to the newest, ${rows[rows.length - 1].day}`);
+  try {
+    const key = createPublicKey(await (await get("/.well-known/smallprint-chain-key.pub")).text());
+    if (day.row.signature) say(verify(null, Buffer.from(day.row.chainHash, "utf8"), key, Buffer.from(day.row.signature, "base64")), `${receipt.chain.day}: Ed25519 signature verifies against the published key`);
+    else console.log(`n/a  ${receipt.chain.day}: the row carries no signature`);
+  } catch (e) { say(false, `signature check could not run: ${e.message}`); }
+  console.log("");
+  console.log(ok ? `${canonicalName} ${version}: the record held this fingerprint on ${receipt.chain.day}, and the row that says so links to the newest row and verifies.` : "Something did not recompute; see FAIL above.");
+  process.exit(ok ? 0 : 1);
+}
 
 const chain = await (await get("/api/chain")).json();
 const rows = [...chain.rows].sort((a, b) => (a.day < b.day ? -1 : 1));

@@ -144,3 +144,16 @@ describe("the version npx actually runs (decision 222)", () => {
     expect(versionFromNpxCache("@scope/pkg", join(root, "missing"))).toBeNull();
   });
 });
+
+describe("skills one level down in a group folder (decision 445)", () => {
+  it("finds group/skill/SKILL.md, and still reads a plain skill folder", () => {
+    const root = mkdtempSync(join(tmpdir(), "sp-skills-"));
+    mkdirSync(join(root, "plain"), { recursive: true });
+    writeFileSync(join(root, "plain", "SKILL.md"), "# plain\n");
+    mkdirSync(join(root, "group", "nested"), { recursive: true });
+    writeFileSync(join(root, "group", "nested", "SKILL.md"), "# nested\n");
+    writeFileSync(join(root, "group", "README.md"), "a note, not a skill\n");
+    const names = readSkillsDir("claude-code", root).map((s) => s.name).sort();
+    expect(names).toEqual(["nested", "plain"]);
+  });
+});

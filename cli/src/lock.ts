@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Discovered, UploadItem } from "./parse";
-import { MCP_CONFIG_KINDS_0_1_7, mcpConfigKinds, type InstructionFile } from "./instructions";
+import {allFileKinds, KINDS_1_0_0, MCP_CONFIG_KINDS_0_1_7, type InstructionFile } from "./instructions";
 
 export const LOCK_VERSION = 1;
 export const LOCK_FILE = "smallprint.lock";
@@ -99,7 +99,8 @@ export function buildLock(items: readonly UploadItem[], files: readonly Instruct
     .map((i) => ({ kind: i.kind, host: i.host, name: i.name, canonicalName: i.canonicalName ?? null, version: i.version ?? null, ...(i.remoteHost ? { remoteHost: i.remoteHost } : {}), ...(i.skillMdSha256 ? { skillMdSha256: i.skillMdSha256 } : {}), ...(i.treeSha256 ? { treeSha256: i.treeSha256 } : {}) }))
     .sort((a, b) => itemKey(a).localeCompare(itemKey(b)));
   const lockFiles: LockFileEntry[] = keptFiles.map((f) => ({ path: displayPath(f.path, home, cwd), kind: f.kind, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path));
-  return { version: LOCK_VERSION, written: now.toISOString(), scope, items: lockItems, files: lockFiles, covers: mcpConfigKinds() };
+  // every kind of file this command reads (decision 445); until 1.0.0 only the server-definition kinds were listed
+  return { version: LOCK_VERSION, written: now.toISOString(), scope, items: lockItems, files: lockFiles, covers: allFileKinds() };
 }
 
 export interface LockDiff {
@@ -138,9 +139,12 @@ export function diffLock(lock: Lockfile, current: Lockfile): LockDiff {
   }
   const fWas = new Map(lock.files.map((f) => [f.path, f]));
   const fNow = new Map(current.files.map((f) => [f.path, f]));
-  // only the kinds of server-definition file differ between versions; every other kind is compared as it always was
-  const watchedNow = new Set(current.covers ?? mcpConfigKinds());
-  const watchedThen = new Set(lock.covers ?? MCP_CONFIG_KINDS_0_1_7);
+  // A kind one side reads and the other did not is "not covered" or "not read", never NEW or MISSING (decision 445).
+  // A lock lists the kinds it covered when it was written: until 1.0.0 only the server-definition kinds, and every
+  // kind of file since. A lock from before that lists no instruction kinds, so every kind the 1.0.0 command read is
+  // taken as covered by it (KINDS_1_0_0), and only kinds added after 1.0.0 fall under this rule for such a lock.
+  const watchedNow = new Set([...(current.covers ?? allFileKinds()), ...KINDS_1_0_0]);
+  const watchedThen = new Set([...(lock.covers ?? MCP_CONFIG_KINDS_0_1_7), ...KINDS_1_0_0]);
   const everWatched = new Set([...watchedNow, ...watchedThen]);
   for (const [p, f] of fNow) if (!fWas.has(p)) (everWatched.has(f.kind) && !watchedThen.has(f.kind) ? out.filesNotCovered : out.filesNew).push(f);
   for (const [p, f] of fWas) if (!fNow.has(p)) (everWatched.has(f.kind) && !watchedNow.has(f.kind) ? out.filesNotRead : out.filesMissing).push(f);

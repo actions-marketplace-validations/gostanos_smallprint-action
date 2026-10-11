@@ -20,7 +20,7 @@ function run(args: string[]): { out: string; requests: string[] } {
   const cwd = mkdtempSync(join(tmpdir(), "sp-nu-cwd-"));
   const log = join(home, "net.log");
   writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { local: { url: "http://127.0.0.1:8765/mcp" }, corp: { url: "https://mcp.corp.internal/mcp" }, pub: { url: "https://mcp.example.com/mcp" } } }));
-  let out = "";
+  let out: string;
   try {
     out = execFileSync(process.execPath, ["--import", TSX, "--import", HOOK, MAIN, ...args], { cwd, env: { PATH: process.env.PATH ?? "", HOME: home, XDG_CONFIG_HOME: join(home, ".config"), NETLOG: log }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   } catch (err) {
