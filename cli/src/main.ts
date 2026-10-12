@@ -33,7 +33,8 @@ import { ask, readAssetReply, readCheckReply, readSyncReply, UnexpectedReply, ty
 import { plural, readWords, type RecordAnswer } from "./record";
 import { isPrivateHost, withoutPrivateHosts } from "./private-host";
 import { machineSalt, SALT_SHAPE, saltFile } from "./salt";
-import { buildLock, diffIsEmpty, diffLock, formatDiff, formatNotCompared, LOCK_FILE, parseLock, projectItems, type LockScope, sarifLog } from "./lock";
+import { buildLock, diffIsEmpty, diffLock, displayPath, formatDiff, formatNotCompared, LOCK_FILE, parseLock, projectItems, type LockScope, sarifLog } from "./lock";
+import { formatLineChange, keyId, lockedLineChange, lockLineMemory, rememberLines, type LineChange } from "./lines";
 import type { DiscoveredServer } from "./parse";
 import { compareTools, launchFor, plainUrl, readHosted, readStdio, type RecordTool, type ToolComparison } from "./live";
 import { launchdPlist, schtasksCommand, systemdUnits, schedulePlan, systemLaunchdPlist, systemPaths, systemPlan, systemUnits } from "./schedule";
@@ -68,7 +69,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -90,6 +91,8 @@ interface State {
   scheduledRuns?: number;
   /** "<base> <label>" for each machine label whose record has moved to keyed hashes; the unkeyed ones are not sent again. */
   keyedLabels?: string[];
+  /** The short name of the salt the line sets under `instructions` were keyed with (lines.ts keyId); sets made under another are not compared. */
+  linesKey?: string;
 }
 function stateFile(): string {
   const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
@@ -173,12 +176,22 @@ function reportInstructions(): void {
   const files = readInstructionFiles(homedir(), process.cwd(), errors);
   const state = readState();
   const { statuses, baseline } = compareInstructions(files, state.instructions ?? {});
+  // line memory (decision 470): a keyed hash of each line of each text file, so the next change can show the lines that
+  // were added and grade them; sets made under another salt, or before this version, are recorded again and grade nothing
+  const key = lineKey(state);
+  const lineChanges: Map<string, LineChange> = key ? rememberLines(statuses, state.instructions ?? {}, baseline, key, state.linesKey === keyId(key)) : new Map();
   console.log("\nInstruction files (compared with this machine's last run, never uploaded):");
   if (!files.length && !statuses.length) {
     console.log("  none found (CLAUDE.md, AGENTS.md, OpenClaw workspace, Cursor and Windsurf rules, Claude settings).");
     return;
   }
-  for (const line of formatInstructions(statuses, homedir())) console.log(line);
+  const text = !flag("no-instruction-text");
+  formatInstructions(statuses, homedir()).forEach((line, i) => {
+    console.log(line);
+    const s = statuses[i]!;
+    const change = text && s.status === "changed" ? lineChanges.get(s.file.path) : undefined;
+    if (change) for (const l of formatLineChange(change)) console.log(l);
+  });
   for (const e of errors) console.log(`  could not read ${e}`);
   const changed = statuses.filter((s) => s.status === "changed" || s.status === "removed").length;
   const fresh = statuses.filter((s) => s.status === "new").length;
@@ -186,7 +199,19 @@ function reportInstructions(): void {
   if (fresh && !state.instructions) console.log("  Recorded. From the next run on, a rewrite of any of these is reported here.");
   console.log("  This record is a file on this machine (~/.config/smallprint/state.json). An agent that can write files can change it as well as the files above.");
   console.log("  To keep a copy it cannot reach, run sync with a free account; the record then lives on smallprint.dev and keeps every change. schedule runs that sync every six hours. https://smallprint.dev/cli#record");
-  writeState({ ...state, instructions: baseline });
+  writeState({ ...state, instructions: baseline, ...(key ? { linesKey: keyId(key) } : {}) });
+}
+
+/**
+ * The key for line sets: the machine's salt (salt.ts), written now if there is none. One exception: a machine whose state
+ * counts scheduled runs from before its salt existed still has unkeyed hashes for its next sync to move (sendsFormerHashes
+ * in instructions.ts), and writing the salt here would hide that trace, so its lines wait until that sync writes it.
+ */
+function lineKey(state: State): string | undefined {
+  const have = machineSalt(false);
+  if (have) return have;
+  if ((state.scheduledRuns ?? 0) > 0) return undefined;
+  return machineSalt(true);
 }
 
 /**
@@ -221,16 +246,21 @@ function lockScope(fallback: LockScope = "machine"): LockScope {
 }
 
 /** The machine as the lock sees it, at the given scope. */
-function currentLock(found: ReturnType<typeof discover>, scope: LockScope) {
+function currentLock(found: ReturnType<typeof discover>, scope: LockScope, withLines = false) {
   const cwd = process.cwd();
   const items = scope === "project" ? projectItems(found.items, cwd) : found.items;
-  return buildLock(toUpload(items), readInstructionFiles(homedir(), cwd), { scope, cwd });
+  const files = readInstructionFiles(homedir(), cwd);
+  // the lock keeps line hashes (decision 470): plain for a project file, whose text is in the repository the lock sits
+  // beside, and keyed with this machine's salt for a home file, so a committed lock cannot confirm a guessed line
+  const key = withLines ? machineSalt(false) : undefined;
+  const lock = buildLock(toUpload(items), files, { scope, cwd, ...(withLines ? { lineMemory: (f: (typeof files)[number]) => lockLineMemory(f, key) } : {}) });
+  return { lock, files };
 }
 
 /** `smallprint lock`: write what this machine runs and the hashes of its instruction files. Nothing is sent. */
 async function lock(): Promise<number> {
   const scope = lockScope();
-  const current = currentLock(discover(), scope);
+  const current = currentLock(discover(), scope, true).lock;
   const path = lockPath();
   let previous: ReturnType<typeof parseLock> | null = null;
   if (existsSync(path)) {
@@ -288,8 +318,17 @@ function checkLocked(found: ReturnType<typeof discover>): number {
   }
   // the lock says what it covers; --project on the command line narrows an older machine lock to the project
   const scope = lockScope(previous.scope);
-  const current = currentLock(found, scope);
+  const { lock: current, files } = currentLock(found, scope);
   const d = diffLock(previous, current);
+  // under each changed instruction file, the lines added since the lock and their grades (decision 470);
+  // --no-instruction-text keeps the one line it printed before
+  const absolute = new Map(files.map((f) => [displayPath(f.path), f.path]));
+  const key = machineSalt(false);
+  const under = flag("no-instruction-text") ? undefined : (p: string): string[] => {
+    const entry = previous.files.find((f) => f.path === p);
+    const abs = absolute.get(p);
+    return entry && abs ? lockedLineChange(entry, abs, key) : [];
+  };
   // files the lock's writer did not watch, or this version does not read: said, and not a difference
   const notCompared = formatNotCompared(d);
   if (diffIsEmpty(d)) {
@@ -298,7 +337,7 @@ function checkLocked(found: ReturnType<typeof discover>): number {
     return 0;
   }
   console.log(`Differs from ${path} (written ${previous.written.slice(0, 10)}):`);
-  for (const l of formatDiff(d)) console.log(l);
+  for (const l of formatDiff(d, under)) console.log(l);
   for (const l of notCompared) console.log(l);
   // --sarif <file>: the same lines as a SARIF 2.1.0 log, one result each, for a code-scanning upload (decision 223)
   const sarifPath = opt("sarif");
@@ -1049,18 +1088,20 @@ async function show(): Promise<number> {
 
 /** Each line of --help that names a command or a flag; test/help.test.ts holds this list to the commands and flags the code reads. */
 const HELP = `smallprint ${VERSION}
-usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--base <url>]
+usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--no-instruction-text] [--base <url>]
        smallprint check --live [--live-local] [--yes]          ask each hosted server what it serves now and compare with the record for its version; --live-local also starts local servers, after showing the commands and asking
        smallprint show <registry>/<name>                       the record for one entry: baseline, how it was read, advisories, last releases; for example smallprint show npm/mcp-remote
        smallprint lock [--project] [--offline] [--file smallprint.lock]   write what this machine runs, and its instruction-file hashes, to a file you commit; --project keeps to this directory; --offline asks the record nothing
-       smallprint check --locked [--project] [--file ...] [--sarif <file>]   compare with the lock, exit 2 when anything changed; local only, works offline, made for CI; --sarif also writes a SARIF log for a code-scanning upload
+       smallprint check --locked [--project] [--file ...] [--sarif <file>] [--no-instruction-text]   compare with the lock, exit 2 when anything changed; local only, works offline, made for CI; under a changed instruction file it shows the lines added since the lock and their grades; --sarif also writes a SARIF log for a code-scanning upload
        smallprint gate [--project] [--strict]                  ask the record about every server here: exit 3 when a high or critical advisory covers a version here, 2 when the small print changed between the lock and what runs here (--strict: or when something could not be answered); for a shell hook before a session
        smallprint sync --label "work laptop" [--yes] [--prune] [--dry-run] [--quiet] [--no-notify] [--migrate-unkeyed] [--base <url>]   (SMALLPRINT_TOKEN=sp_...)
        smallprint schedule --install --label "work laptop" [--every 6] | --status | --uninstall
        sudo --preserve-env=PATH,SMALLPRINT_TOKEN smallprint schedule --install --system --label "work laptop"   (level four: a root-owned reporter the agent cannot reach)
        smallprint --version
   check   find every MCP server and skill your agents have installed and grade them; --json prints the inventory and sends nothing
-          also hashes your instruction files (CLAUDE.md, AGENTS.md, OpenClaw workspace, Cursor and Windsurf rules) and reports any that changed since the last run, locally
+          also hashes your instruction files (CLAUDE.md, AGENTS.md, OpenClaw workspace, Cursor and Windsurf rules) and reports any that changed since the last run, locally;
+          under a changed file it shows the lines that were added and grades them with the rules at https://smallprint.dev/how-we-grade;
+          --no-instruction-text prints only the one line per file, with no text from the file, for a terminal or CI log that should not hold it
   sync    pin that inventory to your account so the daily brief watches it (token from your settings page);
           also records your instruction files there as hashes, so a rewrite on this machine cannot erase the record;
           --quiet prints one line (the scheduled run uses it), --no-notify turns off its desktop notification,
