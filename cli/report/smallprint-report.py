@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 
 # the version of the smallprint package this file ships in; test/version.test.ts holds the two together
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 FILE_MAX = 5_000_000
 DIR_MAX_FILES = 200
 SKILL_MAX_FILES = 2000
@@ -110,6 +110,45 @@ def mcp_config_locations(home, cwd, desktop):
         (g("saoudrizwan.claude-dev", "cline_mcp_settings.json"), "cline", "Cline MCP servers, home", "home", "mcp-json"),
         (j(cwd, ".roo", "mcp.json"), "roo", "Roo MCP servers, project", "project", "mcp-json"),
         (g("rooveterinaryinc.roo-cline", "mcp_settings.json"), "roo", "Roo MCP servers, home", "home", "mcp-json"),
+        # decision 458: the further clients, each from its own docs (the addresses are beside the rows in discover.ts).
+        # "mcp-json:<shape>" reads the servers from that client's own key; YAML is hashed whole, as the command does
+        (j(home, ".kiro", "settings", "mcp.json"), "kiro", "Kiro MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".kiro", "settings", "mcp.json"), "kiro", "Kiro MCP servers, project", "project", "mcp-json"),
+        (j(home, ".config", "opencode", "opencode.json"), "opencode", "OpenCode MCP servers, home", "home", "mcp-json:mcp-key"),
+        (j(cwd, "opencode.json"), "opencode", "OpenCode MCP servers, project", "project", "mcp-json:mcp-key"),
+        (j(home, ".config", "kilo", "kilo.json"), "kilo", "Kilo Code MCP servers, home", "home", "mcp-json:mcp-key"),
+        (j(home, ".config", "kilo", "kilo.jsonc"), "kilo", "Kilo Code MCP servers, home", "home", "mcp-json:mcp-key"),
+        (j(cwd, "kilo.json"), "kilo", "Kilo Code MCP servers, project", "project", "mcp-json:mcp-key"),
+        (j(cwd, "kilo.jsonc"), "kilo", "Kilo Code MCP servers, project", "project", "mcp-json:mcp-key"),
+        (j(cwd, ".kilo", "kilo.json"), "kilo", "Kilo Code MCP servers, project", "project", "mcp-json:mcp-key"),
+        (j(cwd, ".kilo", "kilo.jsonc"), "kilo", "Kilo Code MCP servers, project", "project", "mcp-json:mcp-key"),
+        (j(home, ".config", "crush", "crush.json"), "crush", "Crush MCP servers, home", "home", "mcp-json:mcp-key"),
+        (j(cwd, ".crush.json"), "crush", "Crush MCP servers, project", "project", "mcp-json:mcp-key"),
+        (j(cwd, "crush.json"), "crush", "Crush MCP servers, project", "project", "mcp-json:mcp-key"),
+        (j(home, ".config", "amp", "settings.json"), "amp", "Amp MCP servers, home", "home", "mcp-json:amp"),
+        (j(home, ".config", "amp", "settings.jsonc"), "amp", "Amp MCP servers, home", "home", "mcp-json:amp"),
+        (j(cwd, ".amp", "settings.json"), "amp", "Amp MCP servers, project", "project", "mcp-json:amp"),
+        (j(cwd, ".amp", "settings.jsonc"), "amp", "Amp MCP servers, project", "project", "mcp-json:amp"),
+        (j(home, ".continue", "config.yaml"), "continue", "Continue config.yaml, home", "home", None),
+        (j(cwd, ".continue", "mcpServers"), "continue", "Continue MCP server file, project", "project", "dir:.yaml,.yml,.json"),
+        (j(os.environ.get("APPDATA", j(home, "AppData", "Roaming")), "Block", "goose", "config", "config.yaml") if sys.platform == "win32" else j(home, ".config", "goose", "config.yaml"), "goose", "Goose config.yaml, home", "home", None),
+        (j(home, ".lmstudio", "mcp.json"), "lmstudio", "LM Studio MCP servers, home", "home", "mcp-json"),
+        (j(home, ".qwen", "settings.json"), "qwen", "Qwen Code MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".qwen", "settings.json"), "qwen", "Qwen Code MCP servers, project", "project", "mcp-json"),
+        (j(home, ".junie", "mcp", "mcp.json"), "junie", "Junie MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".junie", "mcp", "mcp.json"), "junie", "Junie MCP servers, project", "project", "mcp-json"),
+        (j(cwd, ".trae", "mcp.json"), "trae", "Trae MCP servers, project", "project", "mcp-json"),
+        (j(home, ".augment", "settings.json"), "augment", "Augment MCP servers, home", "home", "mcp-json"),
+    ] + ([(j(home, ".mcp.json"), "visual-studio", "Visual Studio MCP servers, home", "home", "mcp-json")] if sys.platform == "win32" else []) + [
+        (j(cwd, ".vs", "mcp.json"), "visual-studio", "Visual Studio MCP servers, project", "project", "mcp-json"),
+        (j(home, ".warp", ".mcp.json"), "warp", "Warp MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".warp", ".mcp.json"), "warp", "Warp MCP servers, project", "project", "mcp-json"),
+        (j(home, ".agents", ".mcp.json"), "warp", "Warp MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".agents", ".mcp.json"), "warp", "Warp MCP servers, project", "project", "mcp-json"),
+        (j(home, ".zcode", "cli", "config.json"), "zcode", "ZCode MCP servers, home", "home", "mcp-json:zcode"),
+        (j(cwd, ".zcode", "config.json"), "zcode", "ZCode MCP servers, project", "project", "mcp-json:zcode"),
+        (j(home, ".agents", "mcp.json"), "zcode", "ZCode MCP servers, home", "home", "mcp-json"),
+        (j(cwd, ".agents", "mcp.json"), "zcode", "ZCode MCP servers, project", "project", "mcp-json"),
     ]
 
 
@@ -367,14 +406,77 @@ def keyed_hash(key: str, kind: str, value: str) -> str:
     return hmac.new(bytes.fromhex(key), f"{kind}\0{value}".encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def mcp_digest(text: str, key=None):
+def strip_jsonc(text: str) -> str:
+    """Comments and trailing commas removed outside strings, the same as stripJsonc in parse.ts (decision 458)."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            k = i + 1
+            while k < n and text[k] != '"':
+                k += 2 if text[k] == "\\" else 1
+            out.append(text[i:k + 1])
+            i = k + 1
+            continue
+        if c == "/" and text[i + 1:i + 2] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and text[i + 1:i + 2] == "*":
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        if c == ",":
+            k = i + 1
+            while True:
+                while k < n and text[k].isspace():
+                    k += 1
+                if text[k:k + 2] == "//":
+                    while k < n and text[k] != "\n":
+                        k += 1
+                    continue
+                if text[k:k + 2] == "/*":
+                    end = text.find("*/", k + 2)
+                    k = n if end < 0 else end + 2
+                    continue
+                break
+            if text[k:k + 1] in ("}", "]"):
+                i += 1
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def parse_jsonc(text: str):
     try:
-        j = json.loads(text)
+        return json.loads(text)
+    except Exception:
+        return json.loads(strip_jsonc(text))
+
+
+def server_maps(j, shape):
+    """The maps of servers for a client that keeps them under one key of its own (serverMaps in parse.ts)."""
+    if shape == "mcp-key":
+        m = j.get("mcp")
+    elif shape == "amp":
+        m = j.get("amp.mcpServers")
+    elif shape == "zcode":
+        m = j["mcp"].get("servers") if isinstance(j.get("mcp"), dict) else None
+    else:
+        m = None
+    return [m] if isinstance(m, dict) else []
+
+
+def mcp_digest(text: str, key=None, shape="claude"):
+    try:
+        j = parse_jsonc(text)
     except Exception:
         return None
     if not isinstance(j, dict):
         return None
     servers = {}
+    env_keys = ("env",) if shape == "claude" else ("env", "environment")
 
     def take(m, prefix):
         if not isinstance(m, dict):
@@ -382,10 +484,16 @@ def mcp_digest(text: str, key=None):
         for name, d in m.items():
             if isinstance(d, dict):
                 d = dict(d)
-                if isinstance(d.get("env"), dict):
-                    d["env"] = {k: (f"hmac:{keyed_hash(key, 'env', str(v))}" if key else f"sha256:{sha256_text(str(v))}") for k, v in d["env"].items()}
+                for ek in env_keys:
+                    if isinstance(d.get(ek), dict):
+                        d[ek] = {k: (f"hmac:{keyed_hash(key, 'env', str(v))}" if key else f"sha256:{sha256_text(str(v))}") for k, v in d[ek].items()}
             servers[prefix + name] = canon(d)
 
+    if shape != "claude":
+        for m in server_maps(j, shape):
+            take(m, "")
+        sections = {name: sha256_text(dumps(d)) for name, d in servers.items()}
+        return sha256_text(dumps(canon(servers))), sections
     if is_bare_server_map(j):
         take(j, "")
     take(j.get("mcpServers"), "")
@@ -447,13 +555,14 @@ def read_one(path, host, kind, scope, mode, imported=False, key=None):
         return None
     with open(path, "rb") as f:
         buf = f.read()
-    if mode == "mcp-json":
-        d = mcp_digest(buf.decode("utf-8", "replace"))
+    if mode and mode.startswith("mcp-json"):
+        shape = mode.split(":", 1)[1] if ":" in mode else "claude"
+        d = mcp_digest(buf.decode("utf-8", "replace"), None, shape)
         if not d:
             return None
         out = {"path": path, "host": host, "kind": kind, "scope": scope, "sha256": d[0], "sections": d[1]}
         if key:
-            k = mcp_digest(buf.decode("utf-8", "replace"), key)
+            k = mcp_digest(buf.decode("utf-8", "replace"), key, shape)
             out["keyed"] = {"sha256": k[0], "sections": k[1]}
         return out
     out = {"path": path, "host": host, "kind": kind, "scope": scope, "sha256": sha256(buf)}
@@ -514,10 +623,13 @@ def read_files(home, cwd, key=None):
         if not os.path.exists(path):
             continue
         try:
-            if mode == "dir":
+            if mode and mode.startswith("dir"):
                 if not os.path.isdir(path) or os.path.islink(path):
                     continue
-                for name in sorted(os.listdir(path))[:DIR_MAX_FILES]:
+                # "dir:.yaml,.json" keeps only those extensions (Continue's server folder, decision 458)
+                exts = tuple(mode.split(":", 1)[1].split(",")) if ":" in mode else None
+                names = [n for n in sorted(os.listdir(path)) if not exts or n.endswith(exts)]
+                for name in names[:DIR_MAX_FILES]:
                     if name.startswith("."):
                         continue
                     push(read_one(os.path.join(path, name), host, kind, scope, None, key=key))

@@ -4,7 +4,108 @@
  * reads server names, commands, args and URLs. Env values are inspected for
  * hygiene notes and discarded; nothing here retains them.
  */
-export type Host = "claude-code" | "claude-desktop" | "cursor" | "codex" | "copilot" | "windsurf" | "vscode" | "zed" | "gemini" | "cline" | "roo" | "openclaw" | "hermes" | "harnos" | "manual";
+export type Host =
+  | "claude-code"
+  | "claude-desktop"
+  | "cursor"
+  | "codex"
+  | "copilot"
+  | "windsurf"
+  | "vscode"
+  | "zed"
+  | "gemini"
+  | "cline"
+  | "roo"
+  | "openclaw"
+  | "hermes"
+  | "harnos"
+  // decision 458: every further client whose config file its own docs name (sources beside each row in discover.ts)
+  | "kiro"
+  | "opencode"
+  | "kilo"
+  | "crush"
+  | "amp"
+  | "continue"
+  | "goose"
+  | "lmstudio"
+  | "qwen"
+  | "junie"
+  | "trae"
+  | "augment"
+  | "visual-studio"
+  | "warp"
+  | "zcode"
+  | "manual";
+
+/**
+ * Where a JSON config keeps its servers (decision 458). "claude" is every shape the command read before: mcpServers,
+ * VS Code's servers, Zed's context_servers, ~/.claude.json's projects, or a plugin's bare map. The others are one key
+ * each: OpenCode, Kilo Code and Crush keep them under "mcp", Amp under "amp.mcpServers", ZCode under "mcp"."servers".
+ */
+export type JsonShape = "claude" | "mcp-key" | "amp" | "zcode";
+
+/**
+ * JSON with comments and trailing commas (JSONC), as Zed, VS Code, OpenCode, Kilo Code, Amp and Crush all accept, read
+ * as JSON. Comments and a comma before a closing bracket are removed outside strings only; valid JSON comes back as it
+ * went in, so a file that parsed before parses to the same value.
+ */
+export function stripJsonc(text: string): string {
+  let out = "";
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i]!;
+    if (c === '"') {
+      let j = i + 1;
+      while (j < n && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "/") {
+      while (i < n && text[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end < 0 ? n : end + 2;
+      continue;
+    }
+    if (c === ",") {
+      let j = i + 1;
+      // a comma followed only by space and comments before } or ] is a trailing comma
+      for (;;) {
+        while (j < n && /\s/.test(text[j]!)) j++;
+        if (text[j] === "/" && text[j + 1] === "/") {
+          while (j < n && text[j] !== "\n") j++;
+          continue;
+        }
+        if (text[j] === "/" && text[j + 1] === "*") {
+          const end = text.indexOf("*/", j + 2);
+          j = end < 0 ? n : end + 2;
+          continue;
+        }
+        break;
+      }
+      if (text[j] === "}" || text[j] === "]") {
+        i++;
+        continue;
+      }
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/** JSON.parse that also takes JSONC. A document that is valid JSON is parsed as it is. */
+export function parseJsonc(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return JSON.parse(stripJsonc(text));
+  }
+}
 
 /** Names that can be published: an npm package (optionally scoped) or a PyPI project. Paths never qualify. */
 const NPM_NAME = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
@@ -158,7 +259,28 @@ export function envHygiene(entry: Record<string, unknown>, configPath: string): 
   return out;
 }
 
-function serverFromEntry(host: Host, name: string, entry: Record<string, unknown>, configPath: string): DiscoveredServer {
+/**
+ * One server entry in the common shape (decision 458): OpenCode and Kilo Code give the command and its arguments as one
+ * array and the env under "environment"; Goose writes "cmd", "envs" and "uri". Nothing else is changed or kept.
+ */
+export function normalizeEntry(raw: Record<string, unknown>): Record<string, unknown> {
+  const e: Record<string, unknown> = { ...raw };
+  if (Array.isArray(e.command)) {
+    const parts = (e.command as unknown[]).filter((x): x is string => typeof x === "string");
+    e.command = parts[0];
+    e.args = [...parts.slice(1), ...(Array.isArray(e.args) ? (e.args as unknown[]) : [])];
+  }
+  if (e.command === undefined && typeof e.cmd === "string") e.command = e.cmd;
+  if (e.url === undefined && typeof e.uri === "string") e.url = e.uri;
+  for (const k of ["environment", "envs"]) {
+    const v = e[k];
+    if (v && typeof v === "object" && !Array.isArray(v)) e.env = { ...((e.env as Record<string, unknown> | undefined) ?? {}), ...(v as Record<string, unknown>) };
+  }
+  return e;
+}
+
+function serverFromEntry(host: Host, name: string, raw: Record<string, unknown>, configPath: string): DiscoveredServer {
+  const entry = normalizeEntry(raw);
   // Zed's older form nests the program and its arguments under "command": { "path": ..., "args": [...] }
   const nested = entry.command && typeof entry.command === "object" && !Array.isArray(entry.command) ? (entry.command as Record<string, unknown>) : null;
   const command = typeof entry.command === "string" ? entry.command : nested && typeof nested.path === "string" ? nested.path : undefined;
@@ -191,23 +313,369 @@ export function isBareServerMap(j: unknown): j is Record<string, Record<string, 
   return values.length > 0 && values.every((v) => v !== null && typeof v === "object" && !Array.isArray(v) && (typeof (v as Record<string, unknown>).command === "string" || typeof (v as Record<string, unknown>).url === "string" || typeof (v as Record<string, unknown>).serverUrl === "string"));
 }
 
-export function parseClaudeJson(text: string, host: Host, configPath: string, namePrefix = ""): DiscoveredServer[] {
-  const j = JSON.parse(text) as Record<string, unknown>;
-  const out: DiscoveredServer[] = [];
-  const take = (map: unknown) => {
-    if (!map || typeof map !== "object") return;
-    for (const [name, entry] of Object.entries(map as Record<string, unknown>)) if (entry && typeof entry === "object") out.push(serverFromEntry(host, namePrefix + name, entry as Record<string, unknown>, configPath));
+/**
+ * The maps of servers in one parsed JSON config, each with the name prefix its servers get, for the shape its client
+ * writes. The digest in instructions.ts hashes the same maps, so what is listed and what is locked never differ.
+ */
+export function serverMaps(doc: unknown, shape: JsonShape = "claude"): { prefix: string; map: Record<string, unknown>; projectPath?: string }[] {
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return [];
+  const j = doc as Record<string, unknown>;
+  const isMap = (m: unknown): m is Record<string, unknown> => !!m && typeof m === "object" && !Array.isArray(m);
+  const out: { prefix: string; map: Record<string, unknown>; projectPath?: string }[] = [];
+  const add = (m: unknown) => {
+    if (isMap(m)) out.push({ prefix: "", map: m });
   };
-  if (isBareServerMap(j)) {
-    take(j);
-    return out;
+  if (shape === "mcp-key") add(j.mcp);
+  else if (shape === "amp") add(j["amp.mcpServers"]);
+  else if (shape === "zcode") add(isMap(j.mcp) ? j.mcp.servers : undefined);
+  else {
+    if (isBareServerMap(j)) return [{ prefix: "", map: j }];
+    add(j.mcpServers);
+    // VS Code keeps them under "servers", Zed under "context_servers" (decision 143)
+    add(j.servers);
+    add(j.context_servers);
+    // ~/.claude.json keeps per-project servers under projects.<path>.mcpServers
+    if (isMap(j.projects)) for (const [path, p] of Object.entries(j.projects)) if (isMap(p) && isMap(p.mcpServers)) out.push({ prefix: "", map: p.mcpServers, projectPath: path });
   }
-  take(j.mcpServers);
-  // VS Code keeps them under "servers", Zed under "context_servers" (decision 143)
-  take(j.servers);
-  take(j.context_servers);
-  // ~/.claude.json keeps per-project servers under projects.<path>.mcpServers
-  if (j.projects && typeof j.projects === "object") for (const p of Object.values(j.projects as Record<string, { mcpServers?: unknown }>)) take(p?.mcpServers);
+  return out;
+}
+
+export function parseClaudeJson(text: string, host: Host, configPath: string, namePrefix = "", shape: JsonShape = "claude"): DiscoveredServer[] {
+  const out: DiscoveredServer[] = [];
+  for (const { map } of serverMaps(parseJsonc(text), shape)) {
+    for (const [name, entry] of Object.entries(map)) if (entry && typeof entry === "object" && !Array.isArray(entry)) out.push(serverFromEntry(host, namePrefix + name, entry as Record<string, unknown>, configPath));
+  }
+  return out;
+}
+
+/**
+ * A small YAML reader for the two YAML configs the command reads (decision 458): Goose's config.yaml and Continue's
+ * config.yaml and block files. It takes the block style both write (mappings, sequences, "- key: value" items), flow
+ * lists and maps ([a, b], {}), quoted and plain scalars, comments and | or > text blocks. Anchors are dropped, an alias
+ * reads as null, and true, false and null are the only words given a type; everything else stays a string. Anything
+ * it does not understand is an error, reported for that file, never a guess. No dependency: the command has none.
+ */
+export function parseYaml(text: string): unknown {
+  type Line = { indent: number; text: string; block?: string };
+  const raw = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const lines: Line[] = [];
+  const blank = (s: string) => /^\s*$/.test(s);
+  const indentOf = (s: string) => s.length - s.trimStart().length;
+  for (let i = 0; i < raw.length; i++) {
+    const r = raw[i]!;
+    if (blank(r)) continue;
+    const indent = indentOf(r);
+    const t = stripYamlComment(r.trimStart());
+    if (!t) continue;
+    if (indent === 0 && (t === "---" || t === "..." || t.startsWith("%"))) continue;
+    const line: Line = { indent, text: t };
+    // a | or > text block: every following line indented further (or blank) belongs to it
+    if (/(?::\s+|^-\s+)[|>][+-]?[0-9]?$/.test(t)) {
+      const body: string[] = [];
+      let j = i + 1;
+      while (j < raw.length && (blank(raw[j]!) || indentOf(raw[j]!) > indent)) body.push(raw[j++]!);
+      while (body.length && blank(body[body.length - 1]!)) body.pop();
+      const min = Math.min(...body.filter((b) => !blank(b)).map(indentOf));
+      const texts = body.map((b) => (blank(b) ? "" : b.slice(min)));
+      line.block = /:\s+>|^-\s+>/.test(t) ? texts.join(" ").replace(/ {2,}/g, " ").trim() : texts.join("\n");
+      i = j - 1;
+    }
+    lines.push(line);
+  }
+  let p = 0;
+  const fail = (why: string): never => {
+    throw new Error(`YAML not understood near "${(lines[p]?.text ?? "").slice(0, 40)}": ${why}`);
+  };
+  const isSeq = (t: string) => t === "-" || t.startsWith("- ");
+  const keyOf = (t: string): { key: string; rest: string } | null => {
+    if (t[0] === '"' || t[0] === "'") {
+      const [k, end] = readQuoted(t, 0);
+      let i = end;
+      while (t[i] === " ") i++;
+      if (t[i] !== ":" || !(i + 1 === t.length || /\s/.test(t[i + 1]!))) return null;
+      return { key: k, rest: t.slice(i + 1).trim() };
+    }
+    if (/^[[{]/.test(t)) return null;
+    const m = /^(.*?):(?:\s|$)/.exec(t);
+    if (!m) return null;
+    return { key: m[1]!.trim(), rest: t.slice(m[0].length).trim() };
+  };
+  // a flow value that opens on one line and closes on a later one is joined first
+  const flowText = (first: string): string => {
+    let s = first;
+    const open = (x: string) => {
+      let depth = 0;
+      let q: string | null = null;
+      for (let i = 0; i < x.length; i++) {
+        const c = x[i]!;
+        if (q) {
+          if (c === "\\" && q === '"') i++;
+          else if (c === q) q = null;
+        } else if (c === '"' || c === "'") q = c;
+        else if (c === "[" || c === "{") depth++;
+        else if (c === "]" || c === "}") depth--;
+      }
+      return depth > 0;
+    };
+    while (open(s) && p < lines.length) s += " " + lines[p++]!.text;
+    return s;
+  };
+  const value = (rest: string, line: Line, indent: number): unknown => {
+    if (/^[|>]/.test(rest) && line.block !== undefined) return line.block;
+    if (/^[[{]/.test(rest)) return parseFlow(flowText(rest));
+    let s = rest;
+    // a plain scalar carried on to more-indented lines is one value, folded with spaces
+    if (!/^["']/.test(s)) while (p < lines.length && lines[p]!.indent > indent && !isSeq(lines[p]!.text) && !keyOf(lines[p]!.text)) s += " " + lines[p++]!.text;
+    return yamlScalar(s);
+  };
+  const node = (): unknown => (isSeq(lines[p]!.text) ? seq(lines[p]!.indent) : map(lines[p]!.indent));
+  const seq = (ind: number): unknown[] => {
+    const out: unknown[] = [];
+    while (p < lines.length && lines[p]!.indent === ind && isSeq(lines[p]!.text)) {
+      const L = lines[p]!;
+      const rest = L.text === "-" ? "" : L.text.slice(1).trimStart();
+      if (!rest) {
+        p++;
+        out.push(p < lines.length && lines[p]!.indent > ind ? node() : null);
+        continue;
+      }
+      if (isSeq(rest) || (keyOf(rest) && !/^[|>]/.test(rest))) {
+        // "- key: value" opens a mapping (or "- - x" a list) at the column after the dash
+        lines[p] = { indent: ind + (L.text.length - rest.length), text: rest, ...(L.block !== undefined ? { block: L.block } : {}) };
+        out.push(node());
+        continue;
+      }
+      p++;
+      out.push(value(rest, L, ind));
+    }
+    return out;
+  };
+  const map = (ind: number): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    while (p < lines.length && lines[p]!.indent === ind && !isSeq(lines[p]!.text)) {
+      const L = lines[p]!;
+      const kv = keyOf(L.text);
+      if (!kv) fail("expected key: value");
+      p++;
+      let v: unknown = null;
+      if (kv!.rest === "") {
+        const N = lines[p];
+        if (N && N.indent > ind) v = node();
+        else if (N && N.indent === ind && isSeq(N.text)) v = seq(ind);
+      } else v = value(kv!.rest, L, ind);
+      // "<<" merges an anchor this reader does not keep
+      if (kv!.key !== "<<") out[kv!.key] = v;
+    }
+    return out;
+  };
+  if (!lines.length) return null;
+  let doc: unknown;
+  if (/^[[{]/.test(lines[0]!.text)) doc = parseFlow(flowText(lines[p++]!.text));
+  else if (lines.length === 1 && !isSeq(lines[0]!.text) && !keyOf(lines[0]!.text)) doc = value(lines[p++]!.text, lines[0]!, -1);
+  else doc = node();
+  if (p < lines.length) fail("unexpected indentation");
+  return doc;
+}
+
+/** A comment starts at a # that begins the line or follows a space, outside quotes. */
+function stripYamlComment(s: string): string {
+  let q: string | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (q) {
+      if (q === '"' && c === "\\") i++;
+      else if (c === q) {
+        if (q === "'" && s[i + 1] === "'") i++;
+        else q = null;
+      }
+      continue;
+    }
+    if ((c === '"' || c === "'") && (i === 0 || /[\s[{,:-]/.test(s[i - 1]!))) q = c;
+    else if (c === "#" && (i === 0 || /\s/.test(s[i - 1]!))) return s.slice(0, i).trimEnd();
+  }
+  return s.trimEnd();
+}
+
+/** A quoted YAML scalar starting at s[i]: its value and the index after the closing quote. */
+function readQuoted(s: string, i: number): [string, number] {
+  const q = s[i]!;
+  let out = "";
+  let j = i + 1;
+  while (j < s.length) {
+    const c = s[j]!;
+    if (q === "'" && c === "'") {
+      if (s[j + 1] === "'") {
+        out += "'";
+        j += 2;
+        continue;
+      }
+      return [out, j + 1];
+    }
+    if (q === '"' && c === '"') return [out, j + 1];
+    if (q === '"' && c === "\\") {
+      const e = s[j + 1] ?? "";
+      if (e === "u" && /^[0-9a-fA-F]{4}$/.test(s.slice(j + 2, j + 6))) {
+        out += String.fromCharCode(parseInt(s.slice(j + 2, j + 6), 16));
+        j += 6;
+        continue;
+      }
+      out += ({ n: "\n", t: "\t", r: "\r", "0": "\0", '"': '"', "\\": "\\", "/": "/", " ": " " } as Record<string, string>)[e] ?? e;
+      j += 2;
+      continue;
+    }
+    out += c;
+    j++;
+  }
+  throw new Error(`YAML not understood: unclosed quote in "${s.slice(i, i + 40)}"`);
+}
+
+function yamlScalar(s: string): unknown {
+  let t = s.trim();
+  // an anchor (&name) or a tag (!!str) before the value says nothing about it here
+  t = t.replace(/^(?:&\S+\s+|!!?\S*\s+)+/, "");
+  if (/^&\S+$/.test(t)) return null;
+  if (t.startsWith("*")) return null;
+  if (t[0] === '"' || t[0] === "'") {
+    const [v, end] = readQuoted(t, 0);
+    if (t.slice(end).trim()) throw new Error(`YAML not understood: text after a quoted value in "${t.slice(0, 40)}"`);
+    return v;
+  }
+  if (t === "" || t === "~" || t === "null" || t === "Null" || t === "NULL") return null;
+  if (/^(?:true|True|TRUE)$/.test(t)) return true;
+  if (/^(?:false|False|FALSE)$/.test(t)) return false;
+  return t;
+}
+
+function parseFlow(s: string): unknown {
+  let i = 0;
+  const ws = () => {
+    while (i < s.length && /\s/.test(s[i]!)) i++;
+  };
+  const bad = (): never => {
+    throw new Error(`YAML not understood: flow value "${s.slice(0, 60)}"`);
+  };
+  const plain = (stops: RegExp) => {
+    const start = i;
+    while (i < s.length && !stops.test(s[i]!)) i++;
+    return s.slice(start, i);
+  };
+  const val = (): unknown => {
+    ws();
+    const c = s[i];
+    if (c === "[") {
+      i++;
+      const a: unknown[] = [];
+      ws();
+      if (s[i] === "]") {
+        i++;
+        return a;
+      }
+      for (;;) {
+        a.push(val());
+        ws();
+        if (s[i] === ",") {
+          i++;
+          ws();
+          if (s[i] === "]") {
+            i++;
+            return a;
+          }
+          continue;
+        }
+        if (s[i] === "]") {
+          i++;
+          return a;
+        }
+        return bad();
+      }
+    }
+    if (c === "{") {
+      i++;
+      const o: Record<string, unknown> = {};
+      ws();
+      if (s[i] === "}") {
+        i++;
+        return o;
+      }
+      for (;;) {
+        ws();
+        let k: string;
+        if (s[i] === '"' || s[i] === "'") {
+          const [q, end] = readQuoted(s, i);
+          k = q;
+          i = end;
+        } else k = plain(/[,}:]/).trim();
+        ws();
+        let v: unknown = null;
+        if (s[i] === ":") {
+          i++;
+          v = val();
+        }
+        o[k] = v;
+        ws();
+        if (s[i] === ",") {
+          i++;
+          ws();
+          if (s[i] === "}") {
+            i++;
+            return o;
+          }
+          continue;
+        }
+        if (s[i] === "}") {
+          i++;
+          return o;
+        }
+        return bad();
+      }
+    }
+    if (c === '"' || c === "'") {
+      const [q, end] = readQuoted(s, i);
+      i = end;
+      return q;
+    }
+    if (c === undefined) return bad();
+    return yamlScalar(plain(/[,\]}]/));
+  };
+  const out = val();
+  ws();
+  if (i < s.length) bad();
+  return out;
+}
+
+const isPlainMap = (m: unknown): m is Record<string, unknown> => !!m && typeof m === "object" && !Array.isArray(m);
+
+/**
+ * Goose's config.yaml (decision 458): servers are the entries under "extensions" that start a program (cmd) or name a
+ * URL (uri). Builtin and platform extensions are part of Goose itself and have neither, so they are not listed.
+ */
+export function parseGooseYaml(text: string, configPath: string): DiscoveredServer[] {
+  const doc = parseYaml(text);
+  if (!isPlainMap(doc) || !isPlainMap(doc.extensions)) return [];
+  const out: DiscoveredServer[] = [];
+  for (const [name, e] of Object.entries(doc.extensions)) {
+    if (!isPlainMap(e)) continue;
+    const n = normalizeEntry(e);
+    if (typeof n.command !== "string" && typeof n.url !== "string") continue;
+    out.push(serverFromEntry("goose", name, e, configPath));
+  }
+  return out;
+}
+
+/**
+ * Continue's config.yaml and its block files in .continue/mcpServers/ (decision 458): "mcpServers" is a list of
+ * entries, each with its own name. An entry with neither a command nor a URL (a hub reference) names no program here.
+ */
+export function parseContinueYaml(text: string, configPath: string): DiscoveredServer[] {
+  const doc = parseYaml(text);
+  if (!isPlainMap(doc)) return [];
+  const list = doc.mcpServers;
+  const out: DiscoveredServer[] = [];
+  const entries: [string, unknown][] = Array.isArray(list) ? list.map((e, i) => [isPlainMap(e) && typeof e.name === "string" ? e.name : String(i), e]) : isPlainMap(list) ? Object.entries(list) : [];
+  for (const [name, e] of entries) {
+    if (!isPlainMap(e) || (typeof e.command !== "string" && typeof e.url !== "string")) continue;
+    out.push(serverFromEntry("continue", name, e, configPath));
+  }
   return out;
 }
 

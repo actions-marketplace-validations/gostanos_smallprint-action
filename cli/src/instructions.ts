@@ -10,8 +10,8 @@ import { createHash, createHmac } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { configLocations } from "./discover";
-import { isBareServerMap, type Host } from "./parse";
+import { configLocations, CONTINUE_DIR_EXT } from "./discover";
+import { isBareServerMap, parseJsonc, serverMaps, type Host, type JsonShape } from "./parse";
 import { claudeCodePlugins, codexPlugins, copilotPlugins, manifestHasServers, pluginManifestPath } from "./plugins";
 import { modModulePaths } from "./mods";
 
@@ -30,6 +30,8 @@ export interface InstructionLocation {
   ext?: readonly string[];
   /** MCP config files: hash the server definitions, not the raw file, so a state-heavy file like ~/.claude.json does not move every run and env values are hashed rather than the text that holds them. */
   digest?: "mcp-json";
+  /** With digest: where the servers are kept, for a client that does not use the Claude-style keys (decision 458). */
+  shape?: JsonShape;
 }
 
 export interface InstructionFile {
@@ -126,7 +128,34 @@ export function instructionLocations(home = homedir(), cwd = process.cwd()): Ins
 }
 
 /** How each client is named in a kind label. A client missing here fails the test that walks the table. */
-export const CLIENT_NAME: Partial<Record<Host, string>> = { "claude-desktop": "Claude Desktop", "claude-code": "Claude Code", cursor: "Cursor", windsurf: "Windsurf", codex: "Codex", vscode: "VS Code", zed: "Zed", gemini: "Gemini", cline: "Cline", roo: "Roo" };
+export const CLIENT_NAME: Partial<Record<Host, string>> = {
+  "claude-desktop": "Claude Desktop",
+  "claude-code": "Claude Code",
+  cursor: "Cursor",
+  windsurf: "Windsurf",
+  codex: "Codex",
+  vscode: "VS Code",
+  zed: "Zed",
+  gemini: "Gemini",
+  cline: "Cline",
+  roo: "Roo",
+  // decision 458
+  kiro: "Kiro",
+  opencode: "OpenCode",
+  kilo: "Kilo Code",
+  crush: "Crush",
+  amp: "Amp",
+  continue: "Continue",
+  goose: "Goose",
+  lmstudio: "LM Studio",
+  qwen: "Qwen Code",
+  junie: "Junie",
+  trae: "Trae",
+  augment: "Augment",
+  "visual-studio": "Visual Studio",
+  warp: "Warp",
+  zcode: "ZCode",
+};
 
 /**
  * The files that hold server definitions, made from the one table of clients (configLocations in discover.ts): every
@@ -139,7 +168,11 @@ export function mcpConfigLocations(home = homedir(), cwd = process.cwd()): Instr
     .filter((l) => l.format !== "skills-dir")
     .map((l): InstructionLocation => {
       const client = CLIENT_NAME[l.host] ?? l.host;
-      return l.format === "codex-toml" ? { host: l.host, path: l.path, kind: `${client} config.toml, ${l.scope}`, scope: l.scope } : { host: l.host, path: l.path, kind: `${client} MCP servers, ${l.scope}`, scope: l.scope, digest: "mcp-json" };
+      if (l.format === "codex-toml") return { host: l.host, path: l.path, kind: `${client} config.toml, ${l.scope}`, scope: l.scope };
+      // a YAML config is hashed whole, as Codex's TOML is: the reporter has no YAML reader and must hash the same thing
+      if (l.format === "goose-yaml" || l.format === "continue-yaml") return { host: l.host, path: l.path, kind: `${client} config.yaml, ${l.scope}`, scope: l.scope };
+      if (l.format === "continue-dir") return { host: l.host, path: l.path, kind: `${client} MCP server file, ${l.scope}`, scope: l.scope, dir: true, ext: CONTINUE_DIR_EXT };
+      return { host: l.host, path: l.path, kind: `${client} MCP servers, ${l.scope}`, scope: l.scope, digest: "mcp-json", ...(l.shape ? { shape: l.shape } : {}) };
     });
 }
 
@@ -223,17 +256,20 @@ export function pluginLocations(home = homedir(), cwd = process.cwd()): Instruct
  * confirm a guessed secret or a guessed folder name. The lock and the local baseline use the digest without a key, so a
  * committed lock still compares equal on another machine; only what sync sends is keyed.
  */
-export function mcpServersDigest(text: string, key?: string): { sha256: string; sections: Record<string, string> } | null {
+export function mcpServersDigest(text: string, key?: string, shape: JsonShape = "claude"): { sha256: string; sections: Record<string, string> } | null {
   const valueHash = (kind: "env" | "project", v: string) => (key ? `hmac:${keyedHash(key, kind, v)}` : `sha256:${sha256(Buffer.from(v))}`);
   const projectPrefix = (path: string) => `project:${(key ? keyedHash(key, "project", path) : sha256(Buffer.from(path))).slice(0, 12)}/`;
   let doc: unknown;
   try {
-    doc = JSON.parse(text);
+    // JSONC too (decision 458): Zed, VS Code, OpenCode, Kilo Code, Amp and Crush all allow comments; valid JSON reads as before
+    doc = parseJsonc(text);
   } catch {
     return null;
   }
   if (!doc || typeof doc !== "object") return null;
   const j = doc as Record<string, unknown>;
+  // OpenCode and Kilo Code keep a server's env under "environment": hashed the same way, never in the clear
+  const envKeys = shape === "claude" ? ["env"] : ["env", "environment"];
   const canon = (v: unknown): unknown => {
     if (Array.isArray(v)) return v.map(canon);
     if (v && typeof v === "object") return Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, canon((v as Record<string, unknown>)[k])]));
@@ -244,13 +280,22 @@ export function mcpServersDigest(text: string, key?: string): { sha256: string; 
     if (!m || typeof m !== "object" || Array.isArray(m)) return;
     for (const [name, def] of Object.entries(m as Record<string, unknown>)) {
       const d = def && typeof def === "object" ? { ...(def as Record<string, unknown>) } : def;
-      if (d && typeof d === "object" && (d as Record<string, unknown>).env && typeof (d as Record<string, unknown>).env === "object") {
-        const env = (d as Record<string, unknown>).env as Record<string, unknown>;
-        (d as Record<string, unknown>).env = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, valueHash("env", String(v))]));
+      for (const ek of envKeys) {
+        if (d && typeof d === "object" && (d as Record<string, unknown>)[ek] && typeof (d as Record<string, unknown>)[ek] === "object") {
+          const env = (d as Record<string, unknown>)[ek] as Record<string, unknown>;
+          (d as Record<string, unknown>)[ek] = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, valueHash("env", String(v))]));
+        }
       }
       servers[prefix + name] = canon(d);
     }
   };
+  // the clients added in decision 458 each keep their servers under one key of their own (serverMaps in parse.ts)
+  if (shape !== "claude") {
+    for (const { map } of serverMaps(j, shape)) take(map, "");
+    const own: Record<string, string> = {};
+    for (const [name, def] of Object.entries(servers)) own[name] = sha256(Buffer.from(JSON.stringify(def)));
+    return { sha256: sha256(Buffer.from(JSON.stringify(canon(servers)))), sections: own };
+  }
   // a plugin's .mcp.json is the bare map; VS Code keeps its servers under "servers" (tools audit of 29 Sep 2026, fixes 2
   // and 10). Before this, both hashed as an empty object, so a changed server in either never showed.
   if (isBareServerMap(j)) take(j, "");
@@ -302,9 +347,9 @@ function readOne(loc: InstructionLocation, path: string, imported = false, key?:
   if (!st.isFile() || st.size > FILE_MAX_BYTES) return null;
   const buf = readFileSync(path);
   if (loc.digest === "mcp-json") {
-    const d = mcpServersDigest(buf.toString("utf8"));
+    const d = mcpServersDigest(buf.toString("utf8"), undefined, loc.shape);
     if (!d) return null;
-    const k = key ? mcpServersDigest(buf.toString("utf8"), key) : null;
+    const k = key ? mcpServersDigest(buf.toString("utf8"), key, loc.shape) : null;
     return { host: loc.host, path, kind: loc.kind, scope: loc.scope, sha256: d.sha256, bytes: st.size, sections: d.sections, ...(k ? { keyed: { sha256: k.sha256, sections: k.sections } } : {}) };
   }
   const file: InstructionFile = { host: loc.host, path, kind: loc.kind, scope: loc.scope, sha256: sha256(buf), bytes: st.size };
@@ -386,6 +431,9 @@ export function readInstructionFiles(home = homedir(), cwd = resolve(process.cwd
       }
     }
   };
+  // a server-definition file inside a watched client folder (.kiro/settings/mcp.json, .amp/settings.json,
+  // .cline/mcp.json) is recorded once, under its own kind and by its server digest, never again as a folder file
+  const serverFiles = new Set(mcpConfigLocations(home, cwd).filter((l) => !l.dir).map((l) => resolve(l.path)));
   for (const loc of instructionLocations(home, cwd)) {
     if (!existsSync(loc.path)) continue;
     try {
@@ -406,6 +454,7 @@ export function readInstructionFiles(home = homedir(), cwd = resolve(process.cwd
               continue;
             }
             if (loc.ext && !loc.ext.some((e) => name.endsWith(e))) continue;
+            if (serverFiles.has(resolve(p))) continue;
             left--;
             push(readOne(loc, p, false, key));
           }

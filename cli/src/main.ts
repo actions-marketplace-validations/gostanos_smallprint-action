@@ -68,7 +68,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -406,7 +406,7 @@ async function check(): Promise<number> {
   for (const e of found.errors) console.log(`  could not read ${e.path}: ${e.error}`);
   console.log("");
   if (!found.items.length) {
-    console.log("No MCP servers or skills found in the locations above (Claude Desktop, Claude Code and its plugins, Cursor, Windsurf, Codex, GitHub Copilot CLI plugins, VS Code, Zed, Gemini CLI, Cline, Roo, OpenClaw, Hermes, harnOS).");
+    console.log("No MCP servers or skills found in the locations above (Claude Desktop, Claude Code and its plugins, Cursor, Windsurf, Codex, GitHub Copilot CLI plugins, VS Code, Visual Studio, Zed, Gemini CLI, Qwen Code, Cline, Roo, Kilo Code, Kiro, OpenCode, Crush, Amp, Continue, Goose, LM Studio, Junie, Trae, Augment, Warp, ZCode, OpenClaw, Hermes, harnOS).");
     console.log("Have a config somewhere else? Paste it at https://smallprint.dev/check.");
     reportInstructions();
     reportMods();

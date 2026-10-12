@@ -284,7 +284,11 @@ describe("one table of clients: what is listed is locked (fix 10)", () => {
       expect(w, `${l.host} ${l.path} is listed and must be watched`).toBeDefined();
       expect(w!.kind.startsWith(CLIENT_NAME[l.host]!)).toBe(true);
       expect(w!.scope).toBe(l.scope);
-      expect(w!.digest).toBe(l.format === "codex-toml" ? undefined : "mcp-json");
+      // TOML and YAML configs are hashed whole (the reporter reads neither); every JSON config by its server digest,
+      // read from the key its client keeps servers under (decision 458)
+      expect(w!.digest).toBe(["codex-toml", "goose-yaml", "continue-yaml", "continue-dir"].includes(l.format) ? undefined : "mcp-json");
+      expect(w!.shape).toBe(l.shape);
+      expect(w!.dir).toBe(l.format === "continue-dir" ? true : undefined);
     }
     expect(mcpConfigLocations("/h", "/p").map((l) => l.path)).toEqual(listed.map((l) => l.path));
   });
