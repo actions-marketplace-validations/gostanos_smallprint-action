@@ -3,13 +3,13 @@
 The thin, open client for [Small Print](https://smallprint.dev): find the MCP servers and agent skills your agents have installed, see what the advisory databases have on record for them, and get a grade with the rule printed next to it.
 
 ```
-npx smallprint@1.0.0 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
+npx smallprint@1.1.0 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
 npx smallprint check            # discover and print; asks before it sends anything, then grades; then one question: watch these every morning?
 npx smallprint check --upload   # answer the send question up front (a script or CI has no terminal to ask in, so without it nothing is sent)
 npx smallprint check --email you@company.com   # answer it up front; --no-signup never asks
 npx smallprint check --share    # also get a card link you can post
 npx smallprint check --json     # machine-readable inventory, nothing sent; says so in itself (about, sent) and names its fields at https://smallprint.dev/cli#json
-npx smallprint@1.0.0 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
+npx smallprint@1.1.0 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
 npx smallprint check --live          # ask your hosted servers what they serve now, and compare with the record for their version
 npx smallprint check --live-local    # the same for local servers too; shows the commands it will start and asks first, and never calls a tool; it starts them with the keys in your config, so keep production credentials out of that config
 npx smallprint show npm/mcp-remote   # the record for one entry: baseline, how it was read, advisories, last releases
@@ -32,7 +32,7 @@ Small Print is not only a lookup: pin what you run and it emails you the morning
 
 What leaves your machine: server names, versions, hosts, file hashes of skills (the SKILL.md hash and one hash over all files), and with `sync` a kind label, a hash of the path (made with a random key that is created on your computer and never sent, `~/.config/smallprint/salt`) and a hash of the contents for each instruction file, CLAUDE.md imports included, the machine label (this computer's name unless you give `--label`), and the names of any agent firewalls present on the machine. Those names are kept under a keyed hash of the account and machine label, not under the account, so nobody reading the count can tell whose machine a row is; Small Print holds the key. `lock`, `gate` and `check --live` look entries up on the record by registry name (and `--live` by version or host). One exception, which the command names before it asks and `--dry-run` shows line by line: a machine that reported before version 0.1.6, when path hashes were not yet keyed, sends the earlier hash of each path (a plain SHA-256 of the full path) once, beside the keyed one, so the record keeps its history; the command does this only when its own state file shows scheduled runs from before the key existed, or when you pass `--migrate-unkeyed`. A machine that first syncs with 0.1.8 or later never sends one. What never leaves: paths, config values, environment variables, tokens, file contents. Plaintext secrets and world-readable config files are reported locally only. With `--no-upload` nothing is sent; combined with `--live` it compares nothing, because the live check has to ask smallprint.dev. An address on your own machine or a private network is never sent in any mode.
 
-Looks in: Claude Desktop, Claude Code (global, project, skills, installed plugins, plugins synced from the Claude directory), Cursor, Windsurf, Codex (including installed plugins), GitHub Copilot CLI plugins, VS Code, Zed, Gemini CLI, Cline, Roo (the project's `.roo/mcp.json`), and the OpenClaw, Hermes and harnOS skill folders. The full list of files is at https://smallprint.dev/cli.
+Looks in: Claude Desktop, Claude Code (global, project, skills, installed plugins, plugins synced from the Claude directory), Cursor, Windsurf, Codex (including installed plugins), GitHub Copilot CLI plugins, VS Code, Visual Studio, Zed, Gemini CLI, Qwen Code, Cline, Roo, Kilo Code, Kiro, OpenCode, Crush, Amp, Continue, Goose, LM Studio, Junie, Trae, Augment (the Auggie command line), Warp, ZCode, and the OpenClaw, Hermes and harnOS skill folders. The full list of files is at https://smallprint.dev/cli.
 
 Claude Code mods, plugins whose code runs inside Claude Code, are listed with what their code says it does (for example "changes the tool descriptions Claude reads" or "uses the network"), and a change to a mod's code, or an ability it did not have at the last run, is reported. Every code file a mod names, and each file inside the plugin those import by a written path, is read. See https://smallprint.dev/cli#mods.
 
@@ -68,7 +68,7 @@ With [pre-commit](https://pre-commit.com), the same check runs before every comm
 ```yaml
 repos:
   - repo: https://github.com/gostanos/smallprint-action
-    rev: v1.11
+    rev: v1.12
     hooks:
       - id: smallprint-locked   # runs smallprint check --locked; the commit stops when anything differs from the lock
       - id: smallprint-lock     # only when you ask: pre-commit run smallprint-lock --hook-stage manual
@@ -95,4 +95,4 @@ Inside an agent instead of a terminal: the MCP server `smallprint-mcp` (`npx -y 
 
 ## Source
 
-The source that npm's package is built from can be read with its tests at https://github.com/gostanos/smallprint-action/tree/main/cli, and an issue can be opened there. That is the program, not anything it finds: what the command reads on your machine stays on your machine. npm installs about 149 KB of unminified JavaScript plus a 32 KB Python helper; everything clever lives on the server. What the record can and cannot see is written at https://smallprint.dev/faq.
+The source that npm's package is built from can be read with its tests at https://github.com/gostanos/smallprint-action/tree/main/cli, and an issue can be opened there. That is the program, not anything it finds: what the command reads on your machine stays on your machine. npm installs about 177 KB of unminified JavaScript plus a 39 KB Python helper; everything clever lives on the server. What the record can and cannot see is written at https://smallprint.dev/faq.

@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { compareInstructions, formatInstructions, instructionLocations, mcpServersDigest, readInstructionFiles, sectionHashes } from "../src/instructions";
@@ -139,7 +139,11 @@ describe("MCP config digests", () => {
     const files = readInstructionFiles(home, cwd);
     const cfg = files.find((f) => f.kind === "Claude Code MCP servers, home")!;
     expect(cfg.sections).toEqual({ fs: expect.stringMatching(/^[0-9a-f]{64}$/) });
-    expect(instructionLocations("/h", "/p").filter((l) => l.digest === "mcp-json").length).toBe(17); // Cline project since 1.0.1 (decision 445); Desktop, Claude Code x2, Cursor x2, Windsurf x2, VS Code x2, Cline, Roo x2, and since 0.1.8 Zed x2 and Gemini x2 (test/audit-2026-10-04.test.ts walks the table)
+    // 17 before decision 458: Cline project since 1.0.1 (decision 445); Desktop, Claude Code x2, Cursor x2, Windsurf x2, VS Code x2, Cline, Roo x2, and since 0.1.8 Zed x2 and Gemini x2.
+    // Decision 458 adds 33 JSON configs (Kiro 2, OpenCode 2, Kilo Code 6, Crush 3, Amp 4, LM Studio, Qwen Code 2, Junie 2,
+    // Trae, Augment, Visual Studio's .vs/mcp.json, Warp 4, ZCode 4), and on Windows Visual Studio's %USERPROFILE%\.mcp.json
+    // (test/audit-2026-10-04.test.ts walks the table)
+    expect(instructionLocations("/h", "/p").filter((l) => l.digest === "mcp-json").length).toBe(platform() === "win32" ? 51 : 50);
   });
 });
 

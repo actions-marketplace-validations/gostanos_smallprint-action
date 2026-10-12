@@ -77,6 +77,25 @@ describe("level-four reporter parity", () => {
     writeFileSync(join(cop, "mcp.json"), JSON.stringify({ mcpServers: { kb: { type: "stdio", command: "npx", args: ["-y", "kanban-mcp@1.0.0"] } } }));
     writeFileSync(join(cop, "agents", "triage.agent.md"), "triage\n");
     writeFileSync(join(cop, "skills", "kb", "SKILL.md"), "---\nname: kb\n---\nCopilot skill\n");
+    // since 11 Oct 2026 (decision 458): the further clients' configs, JSONC and each client's own key, YAML hashed whole,
+    // and a server file inside a watched client folder recorded once
+    mkdirSync(join(home, ".kiro", "settings"), { recursive: true });
+    writeFileSync(join(home, ".kiro", "settings", "mcp.json"), JSON.stringify({ mcpServers: { k: { command: "npx", args: ["-y", "k-mcp@1.0.0"], env: { K_TOKEN: "x" } } } }));
+    mkdirSync(join(home, ".config", "opencode"), { recursive: true });
+    writeFileSync(join(home, ".config", "opencode", "opencode.json"), '{\n  // servers\n  "model": "m",\n  "mcp": { "e": { "type": "local", "command": ["npx", "-y", "e@1.0.0"], "environment": { "API_KEY": "sk-x" }, }, },\n}\n');
+    mkdirSync(join(home, ".config", "goose"), { recursive: true });
+    writeFileSync(join(home, ".config", "goose", "config.yaml"), 'extensions:\n  fs:\n    type: stdio\n    cmd: npx\n    args: [ "-y", "fs@1.0.0" ]\n');
+    mkdirSync(join(home, ".zcode", "cli"), { recursive: true });
+    writeFileSync(join(home, ".zcode", "cli", "config.json"), JSON.stringify({ mcp: { servers: { memory: { command: "npx", args: ["memory@1.0.0"] } } } }));
+    mkdirSync(join(home, ".amp"), { recursive: true });
+    writeFileSync(join(home, ".amp", "settings.json"), JSON.stringify({ "amp.mcpServers": { a: { url: "https://a.example/mcp" } } }));
+    mkdirSync(join(home, ".continue", "mcpServers"), { recursive: true });
+    writeFileSync(join(home, ".continue", "mcpServers", "b.yaml"), "mcpServers:\n  - name: B\n    command: npx\n");
+    writeFileSync(join(home, ".continue", "mcpServers", "c.json"), JSON.stringify({ mcpServers: { c: { command: "npx" } } }));
+    writeFileSync(join(home, ".continue", "mcpServers", "README.md"), "not read\n");
+    // a commented Zed settings file is read as JSONC by both
+    mkdirSync(join(home, ".config", "zed"), { recursive: true });
+    writeFileSync(join(home, ".config", "zed", "settings.json"), '// Zed settings\n{ "theme": "One Dark", "context_servers": { "z": { "command": "npx", "args": ["z@1.0.0"], }, }, }\n');
 
     const py = JSON.parse(execFileSync(PY, [HELPER, "--user", "nobody", "--label", "t", "--json", "--home", home], { encoding: "utf8" })) as { files: { path: string; kind: string; sha256: string; sections?: Record<string, string> }[]; items: Record<string, unknown>[] };
     const nodeFiles = readInstructionFiles(home, home).map((f) => ({ path: f.path, kind: f.kind, sha256: f.sha256, ...(f.sections ? { sections: f.sections } : {}) }));
@@ -89,6 +108,12 @@ describe("level-four reporter parity", () => {
     expect(py.files.map((f) => f.kind)).toContain("Codex plugin MCP servers, home");
     expect(py.files.map((f) => f.kind)).toContain("Claude Code mod code, home");
     expect(py.files.map((f) => f.kind)).toContain("Copilot plugin agent definition, home");
+    // decision 458, on both sides: each new client's kind, its servers read from its own key, and no secret in the clear
+    expect(py.files.map((f) => f.kind)).toEqual(expect.arrayContaining(["Kiro MCP servers, home", "OpenCode MCP servers, home", "Goose config.yaml, home", "ZCode MCP servers, home", "Amp MCP servers, project", "Continue MCP server file, project", "Zed MCP servers, home"]));
+    expect(py.files.find((f) => f.path === join(home, ".config", "opencode", "opencode.json"))!.sections).toEqual({ e: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(py.files.find((f) => f.path === join(home, ".config", "zed", "settings.json"))!.sections).toHaveProperty("z");
+    expect(py.files.map((f) => f.path)).not.toContain(join(home, ".continue", "mcpServers", "README.md"));
+    expect(JSON.stringify(py)).not.toContain("sk-x");
     expect(py.files.map((f) => f.path)).toEqual(expect.arrayContaining([join(home, ".claude", "bare.md"), join(plugin, ".mcp.json"), join(plugin, "hooks", "hooks.json"), join(plugin, "commands", "go.md"), join(code, "mcp.json")]));
     expect(py.files.find((f) => f.path === join(plugin, ".mcp.json"))!.sections).toHaveProperty("srv");
     expect(py.items.map((i) => i.name)).toContain("s1");
