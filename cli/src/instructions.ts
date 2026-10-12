@@ -55,6 +55,10 @@ export interface InstructionRecord {
   changed?: string;
   changes?: number;
   sections?: Record<string, string>;
+  /** The keyed hashes of the file's lines, sorted and space-separated, never the text (lines.ts, decision 470). */
+  lines?: string;
+  /** Instead of `lines`, when the file had more distinct lines than the command remembers: how many. */
+  linesOver?: number;
 }
 
 export type InstructionBaseline = Record<string, InstructionRecord>;

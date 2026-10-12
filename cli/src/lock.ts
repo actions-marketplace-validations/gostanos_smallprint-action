@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Discovered, UploadItem } from "./parse";
 import {allFileKinds, KINDS_1_0_0, MCP_CONFIG_KINDS_0_1_7, type InstructionFile } from "./instructions";
+import type { LockLines } from "./lines";
 
 export const LOCK_VERSION = 1;
 export const LOCK_FILE = "smallprint.lock";
@@ -30,7 +31,7 @@ export interface LockItem {
   recordSha256?: string;
 }
 
-export interface LockFileEntry {
+export interface LockFileEntry extends LockLines {
   /** "~/..." for a file under the home directory, a relative path for one under the project, else absolute. */
   path: string;
   kind: string;
@@ -86,6 +87,8 @@ export interface BuildLockOptions {
   home?: string;
   cwd?: string;
   scope?: LockScope;
+  /** What to keep of each file's lines (lines.ts lockLineMemory, decision 470), so `check --locked` can show the added lines; only `lock` passes it. */
+  lineMemory?: (file: InstructionFile) => LockLines | undefined;
 }
 
 export function buildLock(items: readonly UploadItem[], files: readonly InstructionFile[], opts: BuildLockOptions = {}): Lockfile {
@@ -98,7 +101,7 @@ export function buildLock(items: readonly UploadItem[], files: readonly Instruct
   const lockItems: LockItem[] = items
     .map((i) => ({ kind: i.kind, host: i.host, name: i.name, canonicalName: i.canonicalName ?? null, version: i.version ?? null, ...(i.remoteHost ? { remoteHost: i.remoteHost } : {}), ...(i.skillMdSha256 ? { skillMdSha256: i.skillMdSha256 } : {}), ...(i.treeSha256 ? { treeSha256: i.treeSha256 } : {}) }))
     .sort((a, b) => itemKey(a).localeCompare(itemKey(b)));
-  const lockFiles: LockFileEntry[] = keptFiles.map((f) => ({ path: displayPath(f.path, home, cwd), kind: f.kind, sha256: f.sha256 })).sort((a, b) => a.path.localeCompare(b.path));
+  const lockFiles: LockFileEntry[] = keptFiles.map((f) => ({ path: displayPath(f.path, home, cwd), kind: f.kind, sha256: f.sha256, ...(opts.lineMemory?.(f) ?? {}) })).sort((a, b) => a.path.localeCompare(b.path));
   // every kind of file this command reads (decision 445); until 1.0.0 only the server-definition kinds were listed
   return { version: LOCK_VERSION, written: now.toISOString(), scope, items: lockItems, files: lockFiles, covers: allFileKinds() };
 }
@@ -155,13 +158,17 @@ export function diffLock(lock: Lockfile, current: Lockfile): LockDiff {
   return out;
 }
 
-export function formatDiff(d: LockDiff): string[] {
+/** `under`, when given, adds lines below each changed instruction file (the added lines and their grades, decision 470); the SARIF log is made without it. */
+export function formatDiff(d: LockDiff, under?: (path: string) => string[]): string[] {
   const lines: string[] = [];
   const label = (i: LockItem) => `${i.name} (${i.host}${i.version ? `, ${i.version}` : ""}${i.remoteHost ? `, at ${i.remoteHost}` : ""})`;
   for (const c of d.changed) lines.push(`  CHANGED  ${label(c.before)}: ${c.what}`);
   for (const i of d.added) lines.push(`  ADDED    ${label(i)}: not in the lock`);
   for (const i of d.removed) lines.push(`  GONE     ${label(i)}: in the lock, not on this machine`);
-  for (const f of d.filesChanged) lines.push(`  CHANGED  ${f.path}: was ${f.before.slice(0, 12)}, now ${f.after.slice(0, 12)}`);
+  for (const f of d.filesChanged) {
+    lines.push(`  CHANGED  ${f.path}: was ${f.before.slice(0, 12)}, now ${f.after.slice(0, 12)}`);
+    if (under) lines.push(...under(f.path));
+  }
   for (const f of d.filesNew) lines.push(`  NEW      ${f.path}: not in the lock`);
   for (const f of d.filesMissing) lines.push(`  MISSING  ${f.path}: in the lock, not on this machine`);
   return lines;

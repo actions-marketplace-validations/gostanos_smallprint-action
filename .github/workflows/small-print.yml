@@ -17,4 +17,4 @@ jobs:
           node-version: 22
       - name: Compare the plugin's configuration with its lock
         working-directory: plugin
-        run: npx -y smallprint@1.1.0 check --locked --no-upload --no-signup
+        run: npx -y smallprint@1.2.0 check --locked --no-upload --no-signup
