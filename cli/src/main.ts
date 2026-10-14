@@ -33,7 +33,7 @@ import { ask, readAssetReply, readCheckReply, readSyncReply, UnexpectedReply, ty
 import { plural, readWords, type RecordAnswer } from "./record";
 import { isPrivateHost, withoutPrivateHosts } from "./private-host";
 import { machineSalt, SALT_SHAPE, saltFile } from "./salt";
-import { buildLock, diffIsEmpty, diffLock, displayPath, formatDiff, formatNotCompared, LOCK_FILE, parseLock, projectItems, type LockScope, sarifLog } from "./lock";
+import { buildLock, diffIsEmpty, diffLock, displayPath, formatDiff, formatNotCompared, LOCK_FILE, parseLock, projectItems, rootSkillKeys, type LockScope, sarifLog } from "./lock";
 import { formatLineChange, keyId, lockedLineChange, lockLineMemory, rememberLines, type LineChange } from "./lines";
 import type { DiscoveredServer } from "./parse";
 import { compareTools, launchFor, plainUrl, readHosted, readStdio, type RecordTool, type ToolComparison } from "./live";
@@ -45,6 +45,7 @@ import { fileURLToPath } from "node:url";
 const args = process.argv.slice(2);
 const cmd = args[0];
 import { isYes, sendConsent } from "./consent";
+import { versionCheckLine } from "./update-check";
 const flag = (k: string) => args.includes(`--${k}`);
 const opt = (k: string) => {
   const i = args.indexOf(`--${k}`);
@@ -69,7 +70,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -189,7 +190,8 @@ function reportInstructions(): void {
   formatInstructions(statuses, homedir()).forEach((line, i) => {
     console.log(line);
     const s = statuses[i]!;
-    const change = text && s.status === "changed" ? lineChanges.get(s.file.path) : undefined;
+    // a changed file, or a file read for the first time with a line that matches a high rule (decision 499)
+    const change = text && s.status !== "removed" ? lineChanges.get(s.file.path) : undefined;
     if (change) for (const l of formatLineChange(change)) console.log(l);
   });
   for (const e of errors) console.log(`  could not read ${e}`);
@@ -254,13 +256,13 @@ function currentLock(found: ReturnType<typeof discover>, scope: LockScope, withL
   // beside, and keyed with this machine's salt for a home file, so a committed lock cannot confirm a guessed line
   const key = withLines ? machineSalt(false) : undefined;
   const lock = buildLock(toUpload(items), files, { scope, cwd, ...(withLines ? { lineMemory: (f: (typeof files)[number]) => lockLineMemory(f, key) } : {}) });
-  return { lock, files };
+  return { lock, files, rootSkills: rootSkillKeys(items, cwd) };
 }
 
 /** `smallprint lock`: write what this machine runs and the hashes of its instruction files. Nothing is sent. */
 async function lock(): Promise<number> {
   const scope = lockScope();
-  const current = currentLock(discover(), scope, true).lock;
+  const { lock: current, rootSkills } = currentLock(discover(), scope, true);
   const path = lockPath();
   let previous: ReturnType<typeof parseLock> | null = null;
   if (existsSync(path)) {
@@ -288,11 +290,26 @@ async function lock(): Promise<number> {
       }
     }
   }
+  // an unchanged machine leaves the file exactly as it was, byte for byte (decision 494): only the time it was written
+  // would differ, and a lock that changes on every run shows up as a change in git and in anyone's own hash of it
+  const sameAsBefore = (() => {
+    if (!previous) return false;
+    try {
+      const was = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      return JSON.stringify({ ...was, written: "" }) === JSON.stringify({ ...current, written: "" });
+    } catch {
+      return false;
+    }
+  })();
+  if (sameAsBefore) {
+    console.log(`Nothing changed since the last lock; ${path} is left exactly as it was.`);
+    return 0;
+  }
   writeFileSync(path, JSON.stringify(current, null, 2) + "\n");
   console.log(`${previous ? "Updated" : "Wrote"} ${path} (${scope === "project" ? "this project only" : "this whole machine"}): ${plural(current.items.length, "server or skill", "servers and skills")}, ${plural(current.files.length, "instruction file")}. Names, versions, hosts, hashes and instruction-file paths; no configuration values.`);
   if (scope === "machine") console.log("For a lock the repository owns and CI can check, write it with --project: it then holds only what lives under this directory.");
   if (previous) {
-    const d = diffLock(previous, current);
+    const d = diffLock(previous, current, rootSkills);
     if (!diffIsEmpty(d)) {
       console.log("Since the last lock:");
       for (const l of formatDiff(d)) console.log(l);
@@ -318,8 +335,8 @@ function checkLocked(found: ReturnType<typeof discover>): number {
   }
   // the lock says what it covers; --project on the command line narrows an older machine lock to the project
   const scope = lockScope(previous.scope);
-  const { lock: current, files } = currentLock(found, scope);
-  const d = diffLock(previous, current);
+  const { lock: current, files, rootSkills } = currentLock(found, scope);
+  const d = diffLock(previous, current, rootSkills);
   // under each changed instruction file, the lines added since the lock and their grades (decision 470);
   // --no-instruction-text keeps the one line it printed before
   const absolute = new Map(files.map((f) => [displayPath(f.path), f.path]));
@@ -1098,6 +1115,7 @@ usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--ema
        smallprint schedule --install --label "work laptop" [--every 6] | --status | --uninstall
        sudo --preserve-env=PATH,SMALLPRINT_TOKEN smallprint schedule --install --system --label "work laptop"   (level four: a root-owned reporter the agent cannot reach)
        smallprint --version
+       smallprint version --check                              ask npm for the newest published version and say whether this one is it; sends one request and nothing else, and plain --version asks nothing
   check   find every MCP server and skill your agents have installed and grade them; --json prints the inventory and sends nothing
           also hashes your instruction files (CLAUDE.md, AGENTS.md, OpenClaw workspace, Cursor and Windsurf rules) and reports any that changed since the last run, locally;
           under a changed file it shows the lines that were added and grades them with the rules at https://smallprint.dev/how-we-grade;
@@ -1130,7 +1148,8 @@ if (cmd && Object.hasOwn(COMMANDS, cmd)) {
   }
   process.exit(code);
 } else if (cmd === "--version" || cmd === "-v" || cmd === "version") {
-  console.log(VERSION);
+  // plain --version asks nothing; --check sends one request to npm's registry, which is the request and nothing more
+  console.log(flag("check") ? await versionCheckLine(VERSION) : VERSION);
   process.exit(0);
 } else {
   console.log(HELP);
