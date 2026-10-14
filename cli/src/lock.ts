@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Discovered, UploadItem } from "./parse";
-import {allFileKinds, KINDS_1_0_0, MCP_CONFIG_KINDS_0_1_7, type InstructionFile } from "./instructions";
+import {allFileKinds, KINDS_1_0_0, MCP_CONFIG_KINDS_0_1_7, ROOT_SKILLS_KIND, type InstructionFile } from "./instructions";
 import type { LockLines } from "./lines";
 
 export const LOCK_VERSION = 1;
@@ -117,16 +117,29 @@ export interface LockDiff {
   filesNotCovered: LockFileEntry[];
   /** In the lock, of a kind this version of the command does not read: not a difference, a reason to update the command. */
   filesNotRead: LockFileEntry[];
+  /** Skills here now from the root skills/ folder, which the lock's writer did not read: not a difference, a reason to write the lock again. */
+  itemsNotCovered: LockItem[];
+}
+
+/** The skills of a project's root skills/ folder among the discovered items, by lock item key, for diffLock. */
+export function rootSkillKeys(items: readonly Discovered[], cwd = process.cwd()): Set<string> {
+  const root = resolve(cwd, "skills");
+  return new Set(items.filter((i) => i.kind === "agent-skill" && i.host === "manual" && underProject(i.path, root)).map(itemKey));
 }
 
 export const diffIsEmpty = (d: LockDiff): boolean => !d.added.length && !d.removed.length && !d.changed.length && !d.filesNew.length && !d.filesMissing.length && !d.filesChanged.length;
 
-/** What differs between the machine now (`current`) and the lock. */
-export function diffLock(lock: Lockfile, current: Lockfile): LockDiff {
+/**
+ * What differs between the machine now (`current`) and the lock. `rootSkills` names the current items read from the
+ * project's root skills/ folder (rootSkillKeys): against a lock whose writer did not read that folder they are "not in
+ * this lock", never ADDED.
+ */
+export function diffLock(lock: Lockfile, current: Lockfile, rootSkills: ReadonlySet<string> = new Set()): LockDiff {
   const was = new Map(lock.items.map((i) => [itemKey(i), i]));
   const now = new Map(current.items.map((i) => [itemKey(i), i]));
-  const out: LockDiff = { added: [], removed: [], changed: [], filesNew: [], filesMissing: [], filesChanged: [], filesNotCovered: [], filesNotRead: [] };
-  for (const [k, i] of now) if (!was.has(k)) out.added.push(i);
+  const out: LockDiff = { added: [], removed: [], changed: [], filesNew: [], filesMissing: [], filesChanged: [], filesNotCovered: [], filesNotRead: [], itemsNotCovered: [] };
+  const rootSkillsThen = (lock.covers ?? []).includes(ROOT_SKILLS_KIND);
+  for (const [k, i] of now) if (!was.has(k)) (rootSkills.has(k) && !rootSkillsThen ? out.itemsNotCovered : out.added).push(i);
   for (const [k, i] of was) if (!now.has(k)) out.removed.push(i);
   for (const [k, after] of now) {
     const before = was.get(k);
@@ -159,9 +172,10 @@ export function diffLock(lock: Lockfile, current: Lockfile): LockDiff {
 }
 
 /** `under`, when given, adds lines below each changed instruction file (the added lines and their grades, decision 470); the SARIF log is made without it. */
+const label = (i: LockItem) => `${i.name} (${i.host}${i.version ? `, ${i.version}` : ""}${i.remoteHost ? `, at ${i.remoteHost}` : ""})`;
+
 export function formatDiff(d: LockDiff, under?: (path: string) => string[]): string[] {
   const lines: string[] = [];
-  const label = (i: LockItem) => `${i.name} (${i.host}${i.version ? `, ${i.version}` : ""}${i.remoteHost ? `, at ${i.remoteHost}` : ""})`;
   for (const c of d.changed) lines.push(`  CHANGED  ${label(c.before)}: ${c.what}`);
   for (const i of d.added) lines.push(`  ADDED    ${label(i)}: not in the lock`);
   for (const i of d.removed) lines.push(`  GONE     ${label(i)}: in the lock, not on this machine`);
@@ -179,6 +193,7 @@ export function formatNotCompared(d: LockDiff): string[] {
   const lines: string[] = [];
   for (const f of d.filesNotCovered) lines.push(`  NOT IN THIS LOCK  ${f.path}: the version that wrote the lock did not watch this kind of file (${f.kind}); run smallprint lock again to cover it`);
   for (const f of d.filesNotRead) lines.push(`  NOT READ          ${f.path}: the lock holds it and this version of the command does not read this kind of file (${f.kind}); update the command`);
+  for (const i of d.itemsNotCovered) lines.push(`  NOT IN THIS LOCK  ${label(i)}: the version that wrote the lock did not read the skills folder at the project root; run smallprint lock again to cover it`);
   return lines;
 }
 

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { discover, inferPackage, parseClaudeJson, parseCodexToml, readSkillsDir, toUpload } from "../src/discover";
+import { configLocations, discover, inferPackage, parseClaudeJson, parseCodexToml, readSkillsDir, toUpload } from "../src/discover";
 
 const fx = (n: string) => fileURLToPath(new URL(`./fixtures/${n}`, import.meta.url));
 
@@ -155,5 +155,62 @@ describe("skills one level down in a group folder (decision 445)", () => {
     writeFileSync(join(root, "group", "README.md"), "a note, not a skill\n");
     const names = readSkillsDir("claude-code", root).map((s) => s.name).sort();
     expect(names).toEqual(["nested", "plain"]);
+  });
+});
+
+describe("a repository's root skills folder (cli-gaps)", () => {
+  const skillAt = (dir: string) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), "---\nname: x\n---\nDo it\n");
+  };
+  const installPlugin = (home: string) => {
+    const plugin = join(home, ".claude", "plugins", "cache", "m", "p", "1.0.0");
+    skillAt(join(plugin, "skills", "s1"));
+    mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
+    writeFileSync(join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "p" }));
+    writeFileSync(join(home, ".claude", "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "p@m": [{ scope: "user", installPath: plugin }] } }));
+    return plugin;
+  };
+  const skillsOf = (r: ReturnType<typeof discover>) => r.items.filter((i) => i.kind === "agent-skill").map((s) => `${s.host}:${s.name}`).sort();
+
+  it("finds skills/<name>/SKILL.md at the root of the working directory, as a project location", () => {
+    const home = mkdtempSync(join(tmpdir(), "sp-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "sp-repo-"));
+    skillAt(join(cwd, "skills", "pdf"));
+    skillAt(join(cwd, "skills", "document-skills", "docx")); // a group folder, one level down
+    writeFileSync(join(cwd, "skills", "README.md"), "not a skill\n");
+    const r = discover({ home, cwd });
+    expect(skillsOf(r)).toEqual(["manual:docx", "manual:pdf"]);
+    expect(r.read).toEqual([join(cwd, "skills")]);
+    expect(configLocations(home, cwd).filter((l) => l.path === join(cwd, "skills"))).toEqual([{ host: "manual", path: join(cwd, "skills"), format: "skills-dir", scope: "project" }]);
+  });
+
+  it("finds nothing when there is no skills folder, or one that holds no SKILL.md", () => {
+    const home = mkdtempSync(join(tmpdir(), "sp-home-"));
+    expect(discover({ home, cwd: mkdtempSync(join(tmpdir(), "sp-repo-")) }).items).toEqual([]);
+    const other = mkdtempSync(join(tmpdir(), "sp-repo-"));
+    mkdirSync(join(other, "skills", "notes"), { recursive: true });
+    writeFileSync(join(other, "skills", "notes", "README.md"), "a folder called skills that holds no skill\n");
+    const r = discover({ home, cwd: other });
+    expect(r.items).toEqual([]);
+    expect(r.read).toEqual([]);
+  });
+
+  it("reads a plugin's own skills folder once, under the plugin, when the run is from inside that plugin", () => {
+    const home = mkdtempSync(join(tmpdir(), "sp-home-"));
+    const plugin = installPlugin(home);
+    expect(skillsOf(discover({ home, cwd: mkdtempSync(join(tmpdir(), "sp-repo-")) }))).toEqual(["claude-code:s1"]);
+    // from inside the plugin its skills/ is also the root skills folder: still one skill, still the plugin's
+    const inside = discover({ home, cwd: plugin });
+    expect(skillsOf(inside)).toEqual(["claude-code:s1"]);
+    expect(inside.read.filter((p) => p === join(plugin, "skills"))).toHaveLength(1);
+  });
+
+  it("reads a plugin's skills and the project's root skills both when they are different folders", () => {
+    const home = mkdtempSync(join(tmpdir(), "sp-home-"));
+    installPlugin(home);
+    const cwd = mkdtempSync(join(tmpdir(), "sp-repo-"));
+    skillAt(join(cwd, "skills", "s1"));
+    expect(skillsOf(discover({ home, cwd }))).toEqual(["claude-code:s1", "manual:s1"]);
   });
 });

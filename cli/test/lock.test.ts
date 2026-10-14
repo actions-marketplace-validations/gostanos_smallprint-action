@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildLock, diffIsEmpty, diffLock, displayPath, formatDiff, parseLock, projectItems } from "../src/lock";
+import { ROOT_SKILLS_KIND } from "../src/instructions";
+import { buildLock, diffIsEmpty, diffLock, displayPath, formatDiff, formatNotCompared, parseLock, projectItems, rootSkillKeys } from "../src/lock";
 
 const item = (over: Record<string, unknown> = {}) => ({ kind: "mcp" as const, host: "claude-code", name: "fs", canonicalName: "npm:@modelcontextprotocol/server-filesystem", version: "1.0.0", ...over });
 const skill = (over: Record<string, unknown> = {}) => ({ kind: "agent-skill" as const, host: "openclaw", name: "self-improving-agent", canonicalName: null, version: null, skillMdSha256: "a".repeat(64), treeSha256: "b".repeat(64), ...over });
@@ -64,5 +65,29 @@ describe("SARIF for a lock that moved (decision 223)", () => {
     expect(run.results[1]!.locations).toEqual([{ physicalLocation: { artifactLocation: { uri: "CLAUDE.md" } } }]);
     expect(run.tool.driver.rules.map((r) => r.id).sort()).toEqual(["smallprint/lock-changed", "smallprint/lock-new"]);
     expect(run.tool.driver.version).toBe("0.1.2");
+  });
+});
+
+describe("skills from the root skills folder against a lock that did not read it (cli-gaps)", () => {
+  const cwd = "/p";
+  const rootSkill = { kind: "agent-skill" as const, host: "manual" as const, name: "pdf", path: "/p/skills/pdf", displayName: null, description: null, files: [], skillMdSha256: "a".repeat(64) };
+  const agentsSkill = { ...rootSkill, name: "lint", path: "/p/.agents/skills/lint" };
+
+  it("names only the root folder's skills", () => {
+    expect([...rootSkillKeys([rootSkill, agentsSkill, { ...rootSkill, host: "claude-code" as const, name: "s1" }], cwd)]).toEqual(["agent-skill:manual:pdf"]);
+  });
+
+  it("are not in an older lock, not ADDED, and the check still matches; a lock written now covers them", () => {
+    const current = buildLock([skill({ host: "manual", name: "pdf" })] as never[], [], { cwd });
+    const older = buildLock([], [], { cwd });
+    older.covers = older.covers!.filter((k) => k !== ROOT_SKILLS_KIND); // what the command before this change wrote
+    const d = diffLock(older, current, rootSkillKeys([rootSkill], cwd));
+    expect(d.added).toEqual([]);
+    expect(diffIsEmpty(d)).toBe(true);
+    expect(formatNotCompared(d)).toEqual(["  NOT IN THIS LOCK  pdf (manual): the version that wrote the lock did not read the skills folder at the project root; run smallprint lock again to cover it"]);
+    // a lock that lists the folder compares its skills like any other
+    const d2 = diffLock(buildLock([], [], { cwd }), current, rootSkillKeys([rootSkill], cwd));
+    expect(d2.added.map((i) => i.name)).toEqual(["pdf"]);
+    expect(d2.itemsNotCovered).toEqual([]);
   });
 });

@@ -136,6 +136,9 @@ export function configLocations(home = homedir(), cwd = process.cwd()): ConfigLo
     // the .agents/skills convention (skills.sh and the agents that read it), home and project (decision 224)
     { host: "manual", path: join(home, ".agents", "skills"), format: "skills-dir", scope: "home" },
     { host: "manual", path: join(cwd, ".agents", "skills"), format: "skills-dir", scope: "project" },
+    // a repository's own skills/ folder at its root (skills/<name>/SKILL.md), the layout most published skills
+    // repositories use; project scope only, and a plugin's own skills/ folder is left to the plugin (discover below)
+    { host: "manual", path: join(cwd, "skills"), format: "skills-dir", scope: "project" },
     { host: "cursor", path: join(home, ".cursor", "mcp.json"), format: "cursor-json", scope: "home" },
     { host: "cursor", path: join(cwd, ".cursor", "mcp.json"), format: "cursor-json", scope: "project" },
     { host: "windsurf", path: join(home, ".codeium", "windsurf", "mcp_config.json"), format: "cursor-json", scope: "home" },
@@ -327,10 +330,19 @@ export function discover(opts: DiscoverOptions = {}): DiscoveryResult {
   const locations: Pick<ConfigLocation, "host" | "path" | "format" | "shape">[] = [...configLocations(home, cwd), ...(opts.extraJsonConfigs ?? []).map((e) => ({ ...e, format: "claude-json" as const }))];
   // a run from the home directory makes the home and project entries the same file: read it once
   const seen = new Set<string>();
+  // the plugins are listed first so that a skills folder which is a plugin's own (a run from inside a plugin, whose
+  // skills/ is then also the project's root skills folder) is read once, under the plugin, as it was before that row
+  const ccPlugins = claudeCodePlugins(home, cwd);
+  // Codex and GitHub Copilot CLI plugins (decision 363): Codex keeps the servers in .mcp.json, Copilot in mcp.json
+  const others: [InstalledPlugin, Host, string][] = [
+    ...codexPlugins(home).map((p) => [p, "codex", ".mcp.json"] as [InstalledPlugin, Host, string]),
+    ...copilotPlugins(home).map((p) => [p, "copilot", "mcp.json"] as [InstalledPlugin, Host, string]),
+  ];
+  const pluginSkillRoots = new Set([...ccPlugins.map((p) => p.root), ...others.map(([p]) => p.root)].map((r) => resolve(r, "skills")));
   for (const loc of locations) {
     if (!existsSync(loc.path)) continue;
     const key = resolve(loc.path);
-    if (seen.has(key)) continue;
+    if (seen.has(key) || (loc.format === "skills-dir" && pluginSkillRoots.has(key))) continue;
     seen.add(key);
     try {
       if (loc.format === "skills-dir") {
@@ -366,7 +378,7 @@ export function discover(opts: DiscoverOptions = {}): DiscoveryResult {
   // Claude Code plugins (tools audit of 29 Sep 2026, fix 2): each plugin's servers, named as Claude Code names them
   // (plugin:<plugin>:<server>), and its skills
   // installed from a marketplace, synced from the Claude directory, or saved under skills/ (decision 370)
-  for (const plugin of claudeCodePlugins(home, cwd)) {
+  for (const plugin of ccPlugins) {
     const mcp = join(plugin.root, ".mcp.json");
     const manifest = pluginManifestPath(plugin.root);
     for (const [path, inline] of [[mcp, false], [manifest, true]] as const) {
@@ -391,11 +403,7 @@ export function discover(opts: DiscoverOptions = {}): DiscoveryResult {
     }
   }
   // Codex and GitHub Copilot CLI plugins (decision 363): each plugin's servers and skills, under its own host, named as
-  // for Claude Code plugins. Codex keeps the servers in .mcp.json, Copilot in mcp.json
-  const others: [InstalledPlugin, Host, string][] = [
-    ...codexPlugins(home).map((p) => [p, "codex", ".mcp.json"] as [InstalledPlugin, Host, string]),
-    ...copilotPlugins(home).map((p) => [p, "copilot", "mcp.json"] as [InstalledPlugin, Host, string]),
-  ];
+  // for Claude Code plugins
   for (const [plugin, pluginHost, mcpFile] of others) {
     const mcp = join(plugin.root, mcpFile);
     if (existsSync(mcp)) {

@@ -77,17 +77,38 @@ export interface AddedLine {
 
 /** What changed in one file's lines. */
 export type LineChange =
-  /** No set to compare with: the file is new, the state is from a version before line memory, or the salt changed. The set is recorded now and nothing is graded (decision C of 12 Oct 2026). */
-  | { kind: "first" }
+  /**
+   * No set to compare with: the file is new, the state is from a version before line memory, or the salt changed. The
+   * set is recorded now. The lines already there are read once for the high-grade rules only (decision 499): a line that
+   * hides characters, moves data out or tells the agent to keep something from the person is shown, so something risky
+   * that was in the file before the command first read it is not passed over as the baseline. Nothing else is graded.
+   */
+  | { kind: "first"; existing: AddedLine[] }
   /** The file is over the cap now (`before` false), or was at the last run and so has no set to compare with (`before` true). */
   | { kind: "over"; count: number; before: boolean }
   | { kind: "diff"; added: AddedLine[]; removed: number };
+
+/** The lines of a file seen for the first time that match a high-grade rule, each with its high grades only (decision 499). */
+export function firstLook(text: string): AddedLine[] {
+  const out: AddedLine[] = [];
+  const seen = new Set<string>();
+  for (const l of textLines(text)) {
+    if (seen.has(l.text)) continue;
+    seen.add(l.text);
+    const grades = gradeLine(l.text).filter((g) => g.severity === "high");
+    if (grades.length) out.push({ n: l.n, text: l.text, grades });
+  }
+  return out;
+}
+
+/** Printed under every line the first look shows, word for word (decision 499). */
+export const ALREADY_THERE = "This line was already in the file the first time the command read it. If you did not write it, find out where it came from before your agent runs again.";
 
 /** Compare a file's text with the set recorded for it; every added line is graded. */
 export function diffLines(previous: LineMemory | undefined, text: string, hash: LineHasher): { change: LineChange; memory: LineMemory } {
   const memory = lineMemory(text, hash);
   if ("linesOver" in memory) return { change: { kind: "over", count: memory.linesOver, before: false }, memory };
-  if (!previous) return { change: { kind: "first" }, memory };
+  if (!previous) return { change: { kind: "first", existing: firstLook(text) }, memory };
   if ("linesOver" in previous) return { change: { kind: "over", count: previous.linesOver, before: true }, memory };
   const before = new Set(previous.lines ? previous.lines.split(" ") : []);
   const now = new Set(memory.lines ? memory.lines.split(" ") : []);
@@ -130,7 +151,20 @@ export function visible(text: string): string {
  * graded line's rules and the one sentence about who added it, and a count of what is not shown.
  */
 export function formatLineChange(change: LineChange, indent = "      "): string[] {
-  if (change.kind === "first") return [`${indent}Its lines are recorded from this run on, so the next change to it shows the lines that were added.`];
+  if (change.kind === "first") {
+    const recorded = `${indent}Its lines are recorded from this run on, so the next change to it shows the lines that were added.`;
+    if (!change.existing.length) return [recorded];
+    const lines = [`${indent}First look: ${plural(change.existing.length, "line already in this file matches", "lines already in this file match")} a high grading rule.`];
+    for (const a of change.existing.slice(0, SHOWN_MAX)) {
+      lines.push(`${indent}line ${a.n}: ${visible(a.text)}`);
+      for (const g of a.grades) lines.push(`${indent}  ${formatMatch(g)}`);
+      lines.push(`${indent}  ${ALREADY_THERE}`);
+    }
+    const rest = change.existing.length - Math.min(change.existing.length, SHOWN_MAX);
+    if (rest > 0) lines.push(`${indent}${plural(rest, "more such line is", "more such lines are")} not shown here. Read the file to see them.`);
+    lines.push(recorded);
+    return lines;
+  }
   if (change.kind === "over" && change.before) return [`${indent}At the last run this file had ${plural(change.count, "distinct line")}, more than the ${LINE_CAP.toLocaleString("en-US")} the command remembers, so the added lines cannot be shown. Its lines are recorded from this run on. Read the file.`];
   if (change.kind === "over") return [`${indent}This file has ${plural(change.count, "distinct line")}, more than the ${LINE_CAP.toLocaleString("en-US")} the command remembers, so the added lines cannot be shown. Read the file.`];
   const { added, removed } = change;
@@ -176,7 +210,8 @@ export function rememberLines(statuses: readonly InstructionStatus[], previous: 
     if (text === null || !rec) continue;
     const { change, memory } = diffLines(s.status === "new" ? undefined : before, text, hash);
     next[path] = withMemory(rec, memory);
-    if (s.status === "changed") out.set(path, change);
+    // a changed file shows its added lines; a file read for the first time shows only lines that match a high rule
+    if (s.status === "changed" || (change.kind === "first" && change.existing.length)) out.set(path, change);
   }
   return out;
 }

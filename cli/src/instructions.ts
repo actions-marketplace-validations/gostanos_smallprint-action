@@ -193,8 +193,15 @@ const IMPORT_KINDS: readonly string[] = ["Claude Code CLAUDE.md import, home", "
 
 const PLUGIN_KINDS: readonly string[] = ["Claude Code plugin MCP servers, home", "Claude Code plugin hooks, home", "Claude Code plugin command, home", "Claude Code plugin agent definition, home", "Claude Code mod code, home", "Codex plugin MCP servers, home", "Codex plugin agent definition, home", "Copilot plugin MCP servers, home", "Copilot plugin agent definition, home"];
 
+/**
+ * The skills in a repository's root skills/ folder (configLocations in discover.ts), read since the cli-gaps change. Skills
+ * are lock items, not lock files, but the lock lists this location under `covers` so that a lock written before the
+ * folder was read shows its skills as "not in this lock" and not as ADDED, and a gated build does not fail on the update.
+ */
+export const ROOT_SKILLS_KIND = "Agent skills in the root skills folder, project";
+
 /** Every kind of file this command reads, server definitions included: what a lock written now lists as covered (decision 445). */
-export const allFileKinds = (): string[] => [...new Set([...instructionLocations("/h", "/p").map((l) => l.kind), ...PLUGIN_KINDS, ...IMPORT_KINDS, ...mcpConfigKinds()])].sort();
+export const allFileKinds = (): string[] => [...new Set([...instructionLocations("/h", "/p").map((l) => l.kind), ...PLUGIN_KINDS, ...IMPORT_KINDS, ...mcpConfigKinds(), ROOT_SKILLS_KIND])].sort();
 
 /**
  * Every kind of instruction, settings, agent, command and plugin file the 1.0.0 command read (listed from its own
