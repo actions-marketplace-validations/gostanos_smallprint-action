@@ -3,19 +3,21 @@
 The thin, open client for [Small Print](https://smallprint.dev): find the MCP servers and agent skills your agents have installed, see what the advisory databases have on record for them, and get a grade with the rule printed next to it.
 
 ```
-npx smallprint@1.4.0 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
+npx smallprint@1.5.0 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
 npx smallprint check            # discover and print; asks before it sends anything, then grades; then one question: watch these every morning?
 npx smallprint check --upload   # answer the send question up front (a script or CI has no terminal to ask in, so without it nothing is sent)
 npx smallprint check --email you@company.com   # answer it up front; --no-signup never asks
 npx smallprint check --share    # also get a card link you can post
 npx smallprint check --json     # machine-readable inventory, nothing sent; says so in itself (about, sent) and names its fields at https://smallprint.dev/cli#json
-npx smallprint@1.4.0 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
+npx smallprint@1.5.0 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
 npx smallprint check --live          # ask your hosted servers what they serve now, and compare with the record for their version
 npx smallprint check --live-local    # the same for local servers too; shows the commands it will start and asks first, and never calls a tool; it starts them with the keys in your config, so keep production credentials out of that config
 npx smallprint show npm/mcp-remote   # the record for one entry: baseline, how it was read, advisories, last releases
 npx smallprint show npm/@modelcontextprotocol/server-filesystem   # a real one: the reference filesystem server's 2026.7.10 release changed what one tool tells the agent (read_media_file now returns any file, not only images and audio); the record grades it medium
 npx smallprint check --locked --sarif smallprint.sarif   # the lock check, plus a SARIF log for a code-scanning upload
-npx smallprint@1.4.0 version --check   # is a newer version published? one request to npm and nothing else; plain --version asks nothing
+npx smallprint@1.5.0 version --check   # is a newer version published? one request to npm and nothing else; plain --version asks nothing
+npx smallprint watch -- npx -y @modelcontextprotocol/server-filesystem ~/projects   # run a server through a watcher that warns when its tools change and never stops a call
+npx smallprint scan-chats            # look for keys and passwords in your agents' conversation logs on this machine; asks first, sends nothing
 
 SMALLPRINT_TOKEN=sp_... npx smallprint sync --label "work laptop"   # pin what you run to your daily brief
 npx smallprint sync --label "work laptop" --dry-run                 # show what would be pinned
@@ -73,7 +75,7 @@ With [pre-commit](https://pre-commit.com), the same check runs before every comm
 ```yaml
 repos:
   - repo: https://github.com/gostanos/smallprint-action
-    rev: v1.15
+    rev: v1.16
     hooks:
       - id: smallprint-locked   # runs smallprint check --locked; the commit stops when anything differs from the lock
       - id: smallprint-lock     # only when you ask: pre-commit run smallprint-lock --hook-stage manual
@@ -91,6 +93,44 @@ npx smallprint gate && claude    # as a launcher line or a shell hook
 The lock says whether this machine changed. The gate asks the record: for every server here with a registry identity, did its small print change between the version in the lock and the version this machine runs (the pinned version, or the latest on record when the config pins none), and does a high or critical advisory's version range cover the version installed here. A server pinned to the version in its lock passes however many releases came after it; those are printed as news. An advisory whose range cannot be read, or a server whose version is not known, is printed as range unknown. A version the record has not read, or read and found to declare no tools, has no tool text to compare: it is reported as unknown, never as unchanged, and only fails the gate with `--strict`. Exit 3 means an advisory covers a version here, whatever else is true; exit 2 means something changed, or with `--strict` could not be answered. One request per server, carrying the registry name and nothing else.
 
 It reads the same MCP configurations as `check`, listed above.
+
+## Watch a server while it runs
+
+```
+npx smallprint watch -- <the server's command> [its arguments]
+```
+
+`smallprint watch` starts a local MCP server for your agent and passes every message between them through unchanged, in both directions. It watches and warns; it never stops, changes or adds a message. While it runs, it reads the server's answers to `tools/list` and notes when the server says its tool list changed. It compares each tool's name, description and input schema with the last list it saw from the same server command, and, when your `smallprint.lock` holds the record's fingerprint for the version that is running, with that fingerprint. When something differs, it writes one line to the server's log in your MCP client, adds a line to `~/.config/smallprint/watch/changes.jsonl`, and the next `smallprint check` prints the changes: a tool added or removed, a new description (shown before and after, because the description is what your agent reads), or a new input schema. If the watching part fails, it says so in one line and every message keeps passing through. The watcher itself sits between your client and the server, so if the watch process stops, the connection to that server ends, as it would if the server stopped.
+
+It keeps only tool names, the kind of change, fingerprints and the descriptions before and after. It never keeps or prints what a call sends or what it gets back, the server's arguments or its environment values, and it sends nothing anywhere.
+
+What it does not do: it does not look at what a tool does when it runs, at a server's prompts or resources, or at anything other than the tool list, and it does not stop or approve anything. A difference it reports is a fact about the text, not a judgment of the server. It is not a firewall or a security control, and like the rest of the command it comes with no warranty (see LICENSE).
+
+To use it, put `npx -y smallprint watch --` in front of the server's command in your MCP config. In Claude Code (`.mcp.json` in the project, or `~/.claude.json`) and in Cursor (`~/.cursor/mcp.json`, or `.cursor/mcp.json` in the project) the entry looks the same:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "smallprint", "watch", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/you/projects"]
+    }
+  }
+}
+```
+
+Pin the version (`smallprint@<version>`) once you have read it, as with any `npx` line. `check`, `lock` and `gate` read a wrapped entry as the server inside it, so wrapping a server does not change how it is listed or graded. `--file <path>` names a lock other than `smallprint.lock` in the folder the server starts in.
+
+## Look for keys and passwords in your agents' conversation logs
+
+```
+npx smallprint scan-chats            # asks first, then reads and prints what it found, masked
+npx smallprint scan-chats --json     # the same findings for a script
+```
+
+`smallprint scan-chats` runs only when you type it; `check`, `sync`, `lock`, `schedule` and every other command never do. Unless you add `--yes`, it first asks this question: "This reads your agents' conversation logs on this machine to look for keys and passwords. Nothing is sent. Continue? [y/N]" It reads the logs each agent keeps on this machine, in these places: Claude Code's `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`), Codex's `~/.codex/sessions` and `~/.codex/history.jsonl` (or the same under `$CODEX_HOME`), and Gemini CLI's `~/.gemini/tmp/<project>/chats`. It lists each place with the number of files it read there.
+
+It looks for AWS access key IDs and secret keys, GitHub, OpenAI, Anthropic, Stripe and Slack tokens, private key blocks, passwords inside an address such as `postgres://user:password@host`, and assignments such as `DB_PASSWORD=...`. Values that look like examples, placeholders or code such as `password=args.password` are left out, so a real secret written in one of those forms can be missed, and a match is not always a real secret. A key in a form not listed here is not looked for. For each finding it prints the file, the line number, the kind of key and at most its first four characters. It never prints or writes a whole value, it does not change or delete any log, and it sends nothing. The command cannot tell whether a match is a real key or whether it has been used. Text in these logs may have been sent to an AI model during a conversation, so if one of them is a real key or password, consider replacing it where it was issued.
 
 ## Reading the record without the CLI
 

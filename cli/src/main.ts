@@ -39,11 +39,16 @@ import { formatLineChange, keyId, lockedLineChange, lockLineMemory, rememberLine
 import type { DiscoveredServer } from "./parse";
 import { compareTools, launchFor, plainUrl, readHosted, readStdio, type RecordTool, type ToolComparison } from "./live";
 import { launchdPlist, schtasksCommand, systemdUnits, schedulePlan, systemLaunchdPlist, systemPaths, systemPlan, systemUnits } from "./schedule";
+import { formatWatchEntries, runWatch, watchLogSince } from "./watch";
+import { chatSources, countByKind, formatScan, SCAN_QUESTION, scanChats } from "./chatscan";
 import { execFileSync, spawn as spawnChild } from "node:child_process";
 import { chmodSync, chownSync, copyFileSync, lstatSync, rmSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const args = process.argv.slice(2);
+const argv = process.argv.slice(2);
+// for watch, everything after "--" is the server's own command line: it is never read as this command's flags
+const serverArgv = argv[0] === "watch" && argv.includes("--") ? argv.slice(argv.indexOf("--") + 1) : [];
+const args = argv[0] === "watch" && argv.includes("--") ? argv.slice(0, argv.indexOf("--")) : argv;
 const cmd = args[0];
 import { isYes, sendConsent } from "./consent";
 import { versionCheckLine } from "./update-check";
@@ -71,7 +76,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "1.4.0";
+const VERSION = "1.5.0";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -95,10 +100,14 @@ interface State {
   keyedLabels?: string[];
   /** The short name of the salt the line sets under `instructions` were keyed with (lines.ts keyId); sets made under another are not compared. */
   linesKey?: string;
+  /** The time of the newest watch log entry check has printed (decision 513). */
+  watchShownUntil?: string;
+}
+function stateDir(): string {
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "smallprint");
 }
 function stateFile(): string {
-  const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  return join(base, "smallprint", "state.json");
+  return join(stateDir(), "state.json");
 }
 function readState(): State {
   try {
@@ -249,6 +258,15 @@ function reportMods(): void {
   }
   if (mods.length) console.log("  What each mod can do is read from its code's text; code written to hide what it does is not caught. https://smallprint.dev/cli#mods");
   writeState({ ...readState(), mods: modBaseline(mods) });
+}
+
+/** What smallprint watch noticed since the last check (decision 513), printed once. */
+function reportWatch(): void {
+  const state = readState();
+  const entries = watchLogSince(stateDir(), state.watchShownUntil);
+  if (!entries.length) return;
+  for (const l of formatWatchEntries(entries)) console.log(l);
+  writeState({ ...readState(), watchShownUntil: entries.reduce((t, e) => (e.time > t ? e.time : t), state.watchShownUntil ?? "") });
 }
 
 /** The lock on disk for --locked and lock; the path comes from --file, default smallprint.lock in the working directory. */
@@ -547,6 +565,7 @@ async function check(): Promise<number> {
     console.log("Have a config somewhere else? Paste it at https://smallprint.dev/check.");
     instructionReport = reportInstructions();
     reportMods();
+    reportWatch();
     return finish(0, { why: flag("no-upload") ? noUploadWhy : "No MCP servers or skills were found, so there was nothing to look up." });
   }
   printTable(found.items);
@@ -557,6 +576,7 @@ async function check(): Promise<number> {
   }
   instructionReport = reportInstructions();
   reportMods();
+  reportWatch();
   if (flag("no-upload")) {
     console.log("\n--no-upload: nothing sent.");
     return finish(0, { why: noUploadWhy });
@@ -1193,6 +1213,43 @@ async function show(): Promise<number> {
   return 0;
 }
 
+/**
+ * `smallprint watch [--file smallprint.lock] -- <server command> [args]` (decision 513): start the server through a watcher
+ * that passes every byte through unchanged and warns on stderr when its tools change. Nothing but the server's own
+ * output is ever written to stdout, because stdout is the MCP connection.
+ */
+async function watch(): Promise<number> {
+  if (!serverArgv.length) {
+    console.error("usage: smallprint watch [--file smallprint.lock] -- <server command> [its arguments]\nStarts the MCP server through a watcher that passes every message through unchanged and warns on stderr when the server's tools change. It never stops a call and sends nothing.");
+    return 2;
+  }
+  let lockText: string | null = null;
+  try {
+    if (existsSync(lockPath())) lockText = readFileSync(lockPath(), "utf8");
+  } catch {
+    /* no lock to compare with */
+  }
+  return runWatch({ command: serverArgv[0]!, args: serverArgv.slice(1), stateDir: stateDir(), lockText, stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, forwardSignals: true });
+}
+
+/** `smallprint scan-chats [--yes] [--json]` (decision 513): opt in, read the agents' conversation logs here, print masked findings. */
+async function scanChatsCommand(): Promise<number> {
+  if (!flag("yes")) {
+    const answer = await ask(SCAN_QUESTION, process.stdin, flag("json") ? process.stderr : process.stdout);
+    if (!isYes(answer)) {
+      (flag("json") ? console.error : console.log)("Nothing was read.");
+      return 1;
+    }
+  }
+  const r = await scanChats(chatSources(homedir()), tilde);
+  if (flag("json")) {
+    console.log(JSON.stringify({ sent: "nothing", sources: r.sources, filesRead: r.filesRead, unreadable: r.unreadable, findings: r.findings, byKind: countByKind(r.findings) }, null, 2));
+    return 0;
+  }
+  for (const l of formatScan(r)) console.log(l);
+  return 0;
+}
+
 /** Each line of --help that names a command or a flag; test/help.test.ts holds this list to the commands and flags the code reads. */
 const HELP = `smallprint ${VERSION}
 usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--no-instruction-text] [--html [file]] [--base <url>]
@@ -1204,6 +1261,8 @@ usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--ema
        smallprint sync --label "work laptop" [--yes] [--prune] [--dry-run] [--quiet] [--no-notify] [--migrate-unkeyed] [--base <url>]   (SMALLPRINT_TOKEN=sp_...)
        smallprint schedule --install --label "work laptop" [--every 6] | --status | --uninstall
        sudo --preserve-env=PATH,SMALLPRINT_TOKEN smallprint schedule --install --system --label "work laptop"   (level four: a root-owned reporter the agent cannot reach)
+       smallprint watch [--file smallprint.lock] -- <server command> [its arguments]   start an MCP server through a watcher that passes every message through unchanged and warns on stderr when the server's tools change; it never stops a call and sends nothing
+       smallprint scan-chats [--yes] [--json]                   look through your agents' conversation logs on this machine for keys and passwords, after asking first; each finding is shown masked, nothing is sent and no log is changed
        smallprint --version
        smallprint version --check                              ask npm for the newest published version and say whether this one is it; sends one request and nothing else, and plain --version asks nothing
   check   find every MCP server and skill your agents have installed and grade them; --json prints the inventory and sends nothing
@@ -1216,6 +1275,11 @@ usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--ema
           --quiet prints one line (the scheduled run uses it), --no-notify turns off its desktop notification,
           --migrate-unkeyed is for a machine that synced by hand before version 0.1.6: it sends the earlier unkeyed path hashes once so the record keeps its history
   schedule  installs a job on this machine that runs sync every six hours (launchd on macOS, systemd on Linux); you install it, you remove it
+  watch   put it in front of a server's command in your MCP config; it compares each tool's name, description and input schema with the last list it saw
+          and with smallprint.lock, writes one line to the server's log in your MCP client when they differ, and the next check shows the changes;
+          it keeps only tool names, the kind of change, fingerprints and the descriptions before and after, never what a call sends or gets back
+  scan-chats  reads the Claude Code, Codex and Gemini CLI conversation logs on this machine and names the file, the line and the kind of each key or password it finds;
+          it runs only when you type it, asks first unless you add --yes, and --json prints the same findings, masked, for a script
 Five ways to keep the record of your instruction files, weakest to strongest:
   check     the record is a file on this machine; an agent that can write files can change it too
   sync      the record is on smallprint.dev and keeps every change; seen the next time you run sync
@@ -1226,7 +1290,7 @@ Token: --token, or SMALLPRINT_TOKEN in the environment, or ~/.config/smallprint/
 Nothing leaves the machine but names, versions, hosts and file hashes; sync adds a kind label and a keyed hash of the path for each instruction file, the machine label, and the names of any agent firewalls it finds installed (pipelock, AgentGate and the like), nothing about them. https://smallprint.dev/cli`;
 
 /** The commands, each returning its exit code; an answer from the site that cannot be read ends in one sentence, never a stack trace. */
-const COMMANDS: Record<string, () => Promise<number>> = { check, show, lock, gate, sync, schedule };
+const COMMANDS: Record<string, () => Promise<number>> = { check, show, lock, gate, sync, schedule, watch, "scan-chats": scanChatsCommand };
 
 if (cmd && Object.hasOwn(COMMANDS, cmd)) {
   let code: number;

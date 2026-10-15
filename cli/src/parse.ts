@@ -148,6 +148,23 @@ export interface DiscoveredSkill {
 
 export type Discovered = DiscoveredServer | DiscoveredSkill;
 
+/**
+ * The real server inside `smallprint watch [options] -- <command> [args]`, started directly or through npx, bunx, pnpx,
+ * pnpm dlx or yarn dlx (decision 513); null for any other command. `cmd` is the program's lower-case base name.
+ */
+export function watchedCommand(cmd: string, a: readonly string[]): { command: string; args: string[] } | null {
+  let rest: readonly string[] | null = null;
+  if (cmd === "smallprint") rest = a;
+  else if (cmd === "npx" || cmd === "bunx" || cmd === "pnpx" || ((cmd === "pnpm" || cmd === "yarn") && a[0] === "dlx")) {
+    const after = cmd === "pnpm" || cmd === "yarn" ? a.slice(1) : a;
+    const i = after.findIndex((x) => !x.startsWith("-"));
+    if (i >= 0 && /^smallprint(?:@[^/\s]+)?$/.test(after[i]!)) rest = after.slice(i + 1);
+  }
+  if (!rest || rest[0] !== "watch") return null;
+  const dash = rest.indexOf("--");
+  if (dash < 0 || !rest[dash + 1]) return null;
+  return { command: rest[dash + 1]!, args: rest.slice(dash + 2) };
+}
 
 export function inferPackage(command: string | undefined, args: readonly string[]): { canonicalName: string | null; version: string | null; transport: DiscoveredServer["transport"] } {
   let cmd = ((command ?? "").split(/[\\/]/).pop() ?? "").replace(/\.(?:cmd|exe|bat)$/i, "").toLowerCase();
@@ -157,6 +174,9 @@ export function inferPackage(command: string | undefined, args: readonly string[
     cmd = ((a[1] ?? "").split(/[\\/]/).pop() ?? "").replace(/\.(?:cmd|exe|bat)$/i, "").toLowerCase();
     a = a.slice(2);
   }
+  // a server started through `smallprint watch -- <command>` (decision 513) is the server it starts, not the smallprint package
+  const inner = watchedCommand(cmd, a);
+  if (inner) return inferPackage(inner.command, inner.args);
   const firstPositional = (list: readonly string[]) => list.find((x) => !x.startsWith("-"));
   const splitVersion = (spec: string): [string, string | null] => {
     const m = /^(@?[^@]+)(?:@(.+))?$/.exec(spec);
