@@ -3,25 +3,27 @@
 The thin, open client for [Small Print](https://smallprint.dev): find the MCP servers and agent skills your agents have installed, see what the advisory databases have on record for them, and get a grade with the rule printed next to it.
 
 ```
-npx smallprint@1.3.0 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
+npx smallprint@1.4.0 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
 npx smallprint check            # discover and print; asks before it sends anything, then grades; then one question: watch these every morning?
 npx smallprint check --upload   # answer the send question up front (a script or CI has no terminal to ask in, so without it nothing is sent)
 npx smallprint check --email you@company.com   # answer it up front; --no-signup never asks
 npx smallprint check --share    # also get a card link you can post
 npx smallprint check --json     # machine-readable inventory, nothing sent; says so in itself (about, sent) and names its fields at https://smallprint.dev/cli#json
-npx smallprint@1.3.0 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
+npx smallprint@1.4.0 check        # pinned: npx then never fetches a version you have not read; pin it in anything unattended
 npx smallprint check --live          # ask your hosted servers what they serve now, and compare with the record for their version
 npx smallprint check --live-local    # the same for local servers too; shows the commands it will start and asks first, and never calls a tool; it starts them with the keys in your config, so keep production credentials out of that config
 npx smallprint show npm/mcp-remote   # the record for one entry: baseline, how it was read, advisories, last releases
 npx smallprint show npm/@modelcontextprotocol/server-filesystem   # a real one: the reference filesystem server's 2026.7.10 release changed what one tool tells the agent (read_media_file now returns any file, not only images and audio); the record grades it medium
 npx smallprint check --locked --sarif smallprint.sarif   # the lock check, plus a SARIF log for a code-scanning upload
-npx smallprint@1.3.0 version --check   # is a newer version published? one request to npm and nothing else; plain --version asks nothing
+npx smallprint@1.4.0 version --check   # is a newer version published? one request to npm and nothing else; plain --version asks nothing
 
 SMALLPRINT_TOKEN=sp_... npx smallprint sync --label "work laptop"   # pin what you run to your daily brief
 npx smallprint sync --label "work laptop" --dry-run                 # show what would be pinned
 npx smallprint sync --label "work laptop" --prune                   # drop pins this machine no longer has
 SMALLPRINT_TOKEN=sp_... npx smallprint schedule --install --label "work laptop"   # the sync every 6 hours, off-machine record of instruction files
 ```
+
+`npx smallprint check --html` runs the same check and also writes what it found as one page, `smallprint-report.html` in the current folder, or the file you name after the flag. The page lists each agent app with its servers and skills, what the record says about each one, how each compares with your `smallprint.lock` when there is one, and the instruction-file lines the check flags, each with its rule. It holds nothing the terminal does not show, and it loads nothing from the internet when you open it. With `--no-upload` nothing is sent, so the page has no grades and shows what was found and the lock column.
 
 Inside Claude Code, the same check is a plugin: `claude plugin marketplace add gostanos/smallprint-action`, then `claude plugin install smallprint@smallprint`, and `/smallprint:check` runs it with nothing sent. The plugin also bundles Small Print's MCP server, so Claude can read the record itself.
 
@@ -71,7 +73,7 @@ With [pre-commit](https://pre-commit.com), the same check runs before every comm
 ```yaml
 repos:
   - repo: https://github.com/gostanos/smallprint-action
-    rev: v1.14
+    rev: v1.15
     hooks:
       - id: smallprint-locked   # runs smallprint check --locked; the commit stops when anything differs from the lock
       - id: smallprint-lock     # only when you ask: pre-commit run smallprint-lock --hook-stage manual
@@ -98,4 +100,4 @@ Inside an agent instead of a terminal: the MCP server `smallprint-mcp` (`npx -y 
 
 ## Source
 
-The source that npm's package is built from can be read with its tests at https://github.com/gostanos/smallprint-action/tree/main/cli, and an issue can be opened there. That is the program, not anything it finds: what the command reads on your machine stays on your machine. npm installs about 199 KB of unminified JavaScript plus a 39 KB Python helper; the record and everything it reads live on the server. What the record can and cannot see is written at https://smallprint.dev/faq.
+The source that npm's package is built from can be read with its tests at https://github.com/gostanos/smallprint-action/tree/main/cli, and an issue can be opened there. That is the program, not anything it finds: what the command reads on your machine stays on your machine. npm installs about 230 KB of unminified JavaScript plus a 39 KB Python helper; the record and everything it reads live on the server. What the record can and cannot see is written at https://smallprint.dev/faq.

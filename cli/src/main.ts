@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * npx smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--base <url>]
+ * npx smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--html [file]] [--base <url>]
  * npx smallprint show <registry>/<name>      the record for one entry, from the read API (decision 223)
  * npx smallprint check --locked [--sarif <file>]   the lock check, with a SARIF log for code scanning
  * npx smallprint check --live [--live-local] [--yes]   what each server serves now against the record for its version
@@ -23,17 +23,18 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { discover, toUpload, type Discovered } from "./discover";
 import { detectFirewalls, firewallsForUpload } from "./firewalls";
 import { compareInstructions, formatInstructions, FORMER_HASHES_NOTE, pathHash, readInstructionFiles, sendsFormerHashes, toFileUpload, type InstructionBaseline } from "./instructions";
 import { compareMods, findMods, modBaseline, type ModBaseline } from "./mods";
 import { gateExit, gateServer, type GateRecord } from "./gate";
-import { ask, readAssetReply, readCheckReply, readSyncReply, UnexpectedReply, type FileChange } from "./ask";
+import { ask, readAssetReply, readCheckReply, readSyncReply, UnexpectedReply, type CheckReply, type FileChange } from "./ask";
 import { plural, readWords, type RecordAnswer } from "./record";
 import { isPrivateHost, withoutPrivateHosts } from "./private-host";
 import { machineSalt, SALT_SHAPE, saltFile } from "./salt";
-import { buildLock, diffIsEmpty, diffLock, displayPath, formatDiff, formatNotCompared, LOCK_FILE, parseLock, projectItems, rootSkillKeys, type LockScope, sarifLog } from "./lock";
+import { buildLock, diffIsEmpty, diffLock, displayPath, formatDiff, formatNotCompared, itemKey, LOCK_FILE, parseLock, projectItems, rootSkillKeys, underProject, type LockScope, sarifLog } from "./lock";
+import { HTML_FILE, matchResults, renderReport, rowsOf, type LockState, type ReportData, type ReportFile } from "./html-report";
 import { formatLineChange, keyId, lockedLineChange, lockLineMemory, rememberLines, type LineChange } from "./lines";
 import type { DiscoveredServer } from "./parse";
 import { compareTools, launchFor, plainUrl, readHosted, readStdio, type RecordTool, type ToolComparison } from "./live";
@@ -70,7 +71,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -155,6 +156,12 @@ function tilde(p: string): string {
   return p.startsWith(home + sep) ? "~" + p.slice(home.length) : p;
 }
 
+/** For the HTML report: a file in the project as ./name, else shortened to ~, so a shared report names no folders above the project. */
+function shown(p: string): string {
+  const cwd = process.cwd();
+  return p.startsWith(cwd + sep) ? "." + p.slice(cwd.length) : tilde(p);
+}
+
 function pad(s: string, n: number): string {
   return s.length >= n ? s.slice(0, n - 1) + "…" : s + " ".repeat(n - s.length);
 }
@@ -172,7 +179,7 @@ function printTable(items: Discovered[]): void {
  * Windsurf rules, settings with hooks) compared with this machine's last run.
  * Local only: the hashes live in the state file and are never sent.
  */
-function reportInstructions(): void {
+function reportInstructions(): { files: ReportFile[]; errors: string[] } {
   const errors: string[] = [];
   const files = readInstructionFiles(homedir(), process.cwd(), errors);
   const state = readState();
@@ -184,9 +191,15 @@ function reportInstructions(): void {
   console.log("\nInstruction files (compared with this machine's last run, never uploaded):");
   if (!files.length && !statuses.length) {
     console.log("  none found (CLAUDE.md, AGENTS.md, OpenClaw workspace, Cursor and Windsurf rules, Claude settings).");
-    return;
+    return { files: [], errors };
   }
   const text = !flag("no-instruction-text");
+  // what the HTML report shows of each file (--html): the status the line above prints and the lines printed under it
+  const forReport: ReportFile[] = statuses.map((s) => {
+    const change = text && s.status !== "removed" ? lineChanges.get(s.file.path) : undefined;
+    if (s.status === "removed") return { path: shown(s.path), status: "removed", since: s.since };
+    return { path: shown(s.file.path), status: s.status, ...(s.status !== "new" ? { since: s.since } : {}), ...(s.status === "changed" && s.where ? { where: s.where } : {}), ...(change ? { change } : {}) };
+  });
   formatInstructions(statuses, homedir()).forEach((line, i) => {
     console.log(line);
     const s = statuses[i]!;
@@ -202,6 +215,7 @@ function reportInstructions(): void {
   console.log("  This record is a file on this machine (~/.config/smallprint/state.json). An agent that can write files can change it as well as the files above.");
   console.log("  To keep a copy it cannot reach, run sync with a free account; the record then lives on smallprint.dev and keeps every change. schedule runs that sync every six hours. https://smallprint.dev/cli#record");
   writeState({ ...state, instructions: baseline, ...(key ? { linesKey: keyId(key) } : {}) });
+  return { files: forReport, errors };
 }
 
 /**
@@ -446,8 +460,45 @@ async function live(found: ReturnType<typeof discover>): Promise<number> {
   return differs ? 2 : 0;
 }
 
+/**
+ * Where --html writes the report: the path after the flag, or smallprint-report.html in the working directory. The
+ * path is optional, so a word after --html that starts with "--" is the next flag, not a path.
+ */
+function htmlTarget(): string | undefined {
+  const i = args.indexOf("--html");
+  if (i < 0) return undefined;
+  const next = args[i + 1];
+  return resolve(next && !next.startsWith("--") ? next : HTML_FILE);
+}
+
+/** Each item against the lock, for the report's lock column; null when there is no lock. Local only, nothing is sent. */
+function lockColumn(found: ReturnType<typeof discover>): { states: LockState[]; info: NonNullable<ReportData["lock"]> } | { problem: string } | null {
+  const path = lockPath();
+  if (!existsSync(path)) return null;
+  let previous: ReturnType<typeof parseLock>;
+  try {
+    previous = parseLock(readFileSync(path, "utf8"));
+  } catch (err) {
+    return { problem: `${path} could not be read (${(err as Error).message}), so the lock column is left out.` };
+  }
+  const scope = lockScope(previous.scope);
+  const { lock: current, rootSkills } = currentLock(found, scope);
+  const d = diffLock(previous, current, rootSkills);
+  const changed = new Map(d.changed.map((c) => [itemKey(c.after), c.what]));
+  const inLock = new Set(previous.items.map(itemKey));
+  const states = found.items.map((it): LockState => {
+    const k = itemKey(it);
+    const what = changed.get(k);
+    if (what !== undefined) return { state: "changed", what };
+    return inLock.has(k) ? { state: "matches" } : { state: "not in lock" };
+  });
+  return { states, info: { path, written: previous.written, scope, gone: d.removed.length } };
+}
+
 async function check(): Promise<number> {
   const found = discover();
+  const html = htmlTarget();
+  if (html && (flag("live") || flag("live-local") || flag("locked") || flag("json"))) console.error("--html writes a report of the plain check only, so no report is written with --json, --locked or --live.");
   if (flag("live") || flag("live-local")) return live(found);
   if (flag("locked")) return checkLocked(found);
   if (flag("json")) {
@@ -457,6 +508,36 @@ async function check(): Promise<number> {
     console.log(JSON.stringify({ about: "https://smallprint.dev/cli#json", sent: "nothing", read: found.read, errors: found.errors, items: toUpload(found.items), instructions, mods }, null, 2));
     return 0;
   }
+  // --html (decision 510): the report is written at every way out below that has the inventory, with grades when there are some
+  let instructionReport: ReturnType<typeof reportInstructions> = { files: [], errors: [] };
+  const finish = (code: number, graded: { reply: CheckReply } | { why: string; attempted?: boolean }): number => {
+    if (!html) return code;
+    const lock = lockColumn(found);
+    const results = "reply" in graded ? matchResults(found.items, graded.reply.results) : undefined;
+    const data: ReportData = {
+      version: VERSION,
+      readAt: new Date(),
+      rows: rowsOf(found.items, { underProject: (p) => underProject(p), tilde: shown, ...(results ? { results } : {}), ...(lock && "states" in lock ? { lock: lock.states } : {}) }),
+      grades: "reply" in graded ? { letter: graded.reply.grade, headline: graded.reply.headline, criterion: graded.reply.criterion } : null,
+      ...("why" in graded ? { noGrades: graded.why, ...(graded.attempted ? { attempted: true } : {}) } : {}),
+      noUpload: flag("no-upload"),
+      lock: lock && "info" in lock ? lock.info : null,
+      ...(lock && "problem" in lock ? { lockProblem: lock.problem } : {}),
+      files: instructionReport.files,
+      fileErrors: instructionReport.errors.map(tilde),
+      linesHidden: flag("no-instruction-text"),
+    };
+    try {
+      writeFileSync(html, renderReport(data));
+    } catch (err) {
+      console.error(`Could not write the report to ${html}: ${(err as Error).message}`);
+      return code || 1;
+    }
+    console.log(`\nReport written to ${tilde(html)}. It loads nothing from the internet; open it in a browser.`);
+    return code;
+  };
+  const noUploadWhy = "Grades were not looked up, because --no-upload sends nothing.";
+  const notSent = (how: string) => ({ why: `Grades were not looked up, because nothing was sent. ${how}` });
   console.log(`Read ${found.read.length} config location${found.read.length === 1 ? "" : "s"}:`);
   for (const p of found.read) console.log(`  ${tilde(p)}`);
   for (const e of found.errors) console.log(`  could not read ${e.path}: ${e.error}`);
@@ -464,9 +545,9 @@ async function check(): Promise<number> {
   if (!found.items.length) {
     console.log("No MCP servers or skills found in the locations above (Claude Desktop, Claude Code and its plugins, Cursor, Windsurf, Codex, GitHub Copilot CLI plugins, VS Code, Visual Studio, Zed, Gemini CLI, Qwen Code, Cline, Roo, Kilo Code, Kiro, OpenCode, Crush, Amp, Continue, Goose, LM Studio, Junie, Trae, Augment, Warp, ZCode, OpenClaw, Hermes, harnOS).");
     console.log("Have a config somewhere else? Paste it at https://smallprint.dev/check.");
-    reportInstructions();
+    instructionReport = reportInstructions();
     reportMods();
-    return 0;
+    return finish(0, { why: flag("no-upload") ? noUploadWhy : "No MCP servers or skills were found, so there was nothing to look up." });
   }
   printTable(found.items);
   const hygiene = [...new Set(found.items.flatMap((it) => (it.kind === "mcp" ? it.hygiene : [])))];
@@ -474,11 +555,11 @@ async function check(): Promise<number> {
     console.log("\nLocal findings (never uploaded):");
     for (const h of hygiene) console.log(`  ${h}`);
   }
-  reportInstructions();
+  instructionReport = reportInstructions();
   reportMods();
   if (flag("no-upload")) {
     console.log("\n--no-upload: nothing sent.");
-    return 0;
+    return finish(0, { why: noUploadWhy });
   }
   const payload = withoutPrivateHosts(toUpload(found.items)); // a private host is never sent (tools audit fix 6)
   // nothing leaves the machine until the person says so (decision 239): the list above is what would be sent, as names,
@@ -487,13 +568,13 @@ async function check(): Promise<number> {
   const consent = sendConsent({ noUpload: flag("no-upload"), upload: flag("upload"), yes: flag("yes"), share: flag("share"), email: opt("email") }, Boolean(process.stdin.isTTY));
   if (consent === "skip") {
     console.log(`\nNothing sent. To get grades and advisories for the list above, run again with --upload: it sends ${what} to ${base}/api/check.`);
-    return 0;
+    return finish(0, notSent("To get them, run npx smallprint check --upload --html."));
   }
   if (consent === "ask") {
     const answer = await ask(`\nSend ${what} to ${base}/api/check to get grades and advisories? [y/N] `);
     if (!isYes(answer)) {
       console.log("Nothing sent.");
-      return 0;
+      return finish(0, notSent("The answer at the question was no."));
     }
   }
   console.log(`\nSending to ${base}/api/check: ${what}.`);
@@ -502,20 +583,29 @@ async function check(): Promise<number> {
     res = await fetch(`${base}/api/check`, { method: "POST", headers: { "content-type": "application/json", "user-agent": `smallprint-cli/${VERSION}` }, body: JSON.stringify({ items: payload, share: flag("share"), source: "cli" }), signal: TIMEOUT() });
   } catch (err) {
     console.error(`Could not reach ${base} (${(err as Error).message}). Check your connection or proxy; --no-upload prints the inventory without sending.`);
-    return 1;
+    return finish(1, { why: `There are no grades, because the check could not reach ${base}.`, attempted: true });
   }
   if (!res.ok) {
     console.error(`${base}/api/check answered ${res.status}: ${await errorLine(res)}`);
-    return 1;
+    return finish(1, { why: `There are no grades, because ${base}/api/check answered ${res.status}.`, attempted: true });
   }
-  const r = await readCheckReply(res, `${base}/api/check`);
+  let r: CheckReply;
+  try {
+    r = await readCheckReply(res, `${base}/api/check`);
+  } catch (err) {
+    // the command still ends in the one sentence main prints for an answer it cannot read; the report says the same
+    if (err instanceof UnexpectedReply) finish(1, { why: `There are no grades, because ${base}/api/check answered with something this version of the command cannot read.`, attempted: true });
+    throw err;
+  }
   console.log(`\nGrade ${r.grade}: ${r.headline}`);
   console.log(`  ${r.criterion}`);
   // "clean" is the status key the record answers with; on screen it reads as what it is, no advisory on record, never as safe (decision 210)
   for (const x of r.results) console.log(`  ${pad(x.status === "clean" ? "no advisory" : x.status, 12)} ${pad(x.name, 40)} ${x.detail}${x.url ? `  ${x.url}` : ""}`);
   if (r.cardUrl) console.log(`\nShareable card: ${r.cardUrl}`);
   else console.log("\nAdd --share for a card link you can post.");
-  return await offerBrief(payload);
+  const code = finish(0, { reply: r });
+  const brief = await offerBrief(payload);
+  return brief || code;
 }
 
 /** The one question at the end of check: watch these every morning? */
@@ -1105,7 +1195,7 @@ async function show(): Promise<number> {
 
 /** Each line of --help that names a command or a flag; test/help.test.ts holds this list to the commands and flags the code reads. */
 const HELP = `smallprint ${VERSION}
-usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--no-instruction-text] [--base <url>]
+usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--no-instruction-text] [--html [file]] [--base <url>]
        smallprint check --live [--live-local] [--yes]          ask each hosted server what it serves now and compare with the record for its version; --live-local also starts local servers, after showing the commands and asking
        smallprint show <registry>/<name>                       the record for one entry: baseline, how it was read, advisories, last releases; for example smallprint show npm/mcp-remote
        smallprint lock [--project] [--offline] [--file smallprint.lock]   write what this machine runs, and its instruction-file hashes, to a file you commit; --project keeps to this directory; --offline asks the record nothing
@@ -1119,7 +1209,8 @@ usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--ema
   check   find every MCP server and skill your agents have installed and grade them; --json prints the inventory and sends nothing
           also hashes your instruction files (CLAUDE.md, AGENTS.md, OpenClaw workspace, Cursor and Windsurf rules) and reports any that changed since the last run, locally;
           under a changed file it shows the lines that were added and grades them with the rules at https://smallprint.dev/how-we-grade;
-          --no-instruction-text prints only the one line per file, with no text from the file, for a terminal or CI log that should not hold it
+          --no-instruction-text prints only the one line per file, with no text from the file, for a terminal or CI log that should not hold it;
+          --html [file] also writes what it found as one page to open in a browser (smallprint-report.html in this folder unless you name a file); the page loads nothing from the internet, and with --no-upload it has no grades
   sync    pin that inventory to your account so the daily brief watches it (token from your settings page);
           also records your instruction files there as hashes, so a rewrite on this machine cannot erase the record;
           --quiet prints one line (the scheduled run uses it), --no-notify turns off its desktop notification,

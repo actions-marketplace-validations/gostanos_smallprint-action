@@ -145,6 +145,12 @@ export function visible(text: string): string {
   return clipped.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\p{Cf}\u034F\u180E\u2028\u2029]/gu, (c) => `<U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`);
 }
 
+/** The added lines that are shown, in file order: graded lines first when there are more than SHOWN_MAX, so a graded one is never pushed out of sight. */
+export function shownAdded(added: readonly AddedLine[]): AddedLine[] {
+  const pick = new Set([...added.filter((a) => a.grades.length), ...added.filter((a) => !a.grades.length)].slice(0, SHOWN_MAX));
+  return added.filter((a) => pick.has(a));
+}
+
 /**
  * The lines printed under a file's CHANGED line: the counts, up to SHOWN_MAX added lines with their line numbers
  * (graded lines first, so twenty harmless lines cannot push a graded one out of sight; printed in file order), each
@@ -172,7 +178,7 @@ export function formatLineChange(change: LineChange, indent = "      "): string[
   const graded = added.filter((a) => a.grades.length).length;
   lines.push(`${indent}${added.length ? plural(added.length, "line") : "No line"} added and ${removed ? plural(removed, "line") : "none"} removed${graded ? `; ${plural(graded, "added line matches", "added lines match")} a grading rule` : ""}.`);
   if (!added.length && !removed) lines.push(`${indent}The same lines are there, so the change is in their order, in blank lines or in trailing spaces.`);
-  const pick = new Set([...added.filter((a) => a.grades.length), ...added.filter((a) => !a.grades.length)].slice(0, SHOWN_MAX));
+  const pick = new Set(shownAdded(added));
   for (const a of added) {
     if (!pick.has(a)) continue;
     lines.push(`${indent}line ${a.n}: ${visible(a.text)}`);
