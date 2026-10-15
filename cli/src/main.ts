@@ -76,7 +76,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "1.5.0";
+const VERSION = "1.5.1";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -679,7 +679,9 @@ async function offerBrief(payload: ReturnType<typeof toUpload>): Promise<number>
  */
 function desktopNotify(title: string, body: string): void {
   if (typeof process.getuid === "function" && process.getuid() === 0) return;
-  const clean = (s: string) => s.replace(/["\\]/g, "").slice(0, 200);
+  // quotes and backslashes would end the notification's text, and a line break or other control character would end the
+  // script; all of them go, so no text can become part of the command
+  const clean = (s: string) => s.replace(/["\\]/g, "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").slice(0, 200);
   try {
     const sp = spawnChild;
     if (process.platform === "darwin") sp("osascript", ["-e", `display notification "${clean(body)}" with title "Small Print" subtitle "${clean(title)}"`], { stdio: "ignore", detached: true }).unref();
@@ -1220,7 +1222,7 @@ async function show(): Promise<number> {
  */
 async function watch(): Promise<number> {
   if (!serverArgv.length) {
-    console.error("usage: smallprint watch [--file smallprint.lock] -- <server command> [its arguments]\nStarts the MCP server through a watcher that passes every message through unchanged and warns on stderr when the server's tools change. It never stops a call and sends nothing.");
+    console.error("usage: smallprint watch [--file smallprint.lock] [--no-notify] -- <server command> [its arguments]\nStarts the MCP server through a watcher that passes every message through unchanged and, when the server's tools change, warns on stderr and with a desktop notification (--no-notify leaves the notification out). It never stops a call and sends nothing.");
     return 2;
   }
   let lockText: string | null = null;
@@ -1229,7 +1231,9 @@ async function watch(): Promise<number> {
   } catch {
     /* no lock to compare with */
   }
-  return runWatch({ command: serverArgv[0]!, args: serverArgv.slice(1), stateDir: stateDir(), lockText, stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, forwardSignals: true });
+  // a change also shows as a desktop notification, made on this machine (Nick, 15 Oct 2026: a warning only in a log can
+  // go unseen); --no-notify leaves it out
+  return runWatch({ command: serverArgv[0]!, args: serverArgv.slice(1), stateDir: stateDir(), lockText, stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, forwardSignals: true, ...(flag("no-notify") ? {} : { notify: desktopNotify }) });
 }
 
 /** `smallprint scan-chats [--yes] [--json]` (decision 513): opt in, read the agents' conversation logs here, print masked findings. */
@@ -1261,7 +1265,7 @@ usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--ema
        smallprint sync --label "work laptop" [--yes] [--prune] [--dry-run] [--quiet] [--no-notify] [--migrate-unkeyed] [--base <url>]   (SMALLPRINT_TOKEN=sp_...)
        smallprint schedule --install --label "work laptop" [--every 6] | --status | --uninstall
        sudo --preserve-env=PATH,SMALLPRINT_TOKEN smallprint schedule --install --system --label "work laptop"   (level four: a root-owned reporter the agent cannot reach)
-       smallprint watch [--file smallprint.lock] -- <server command> [its arguments]   start an MCP server through a watcher that passes every message through unchanged and warns on stderr when the server's tools change; it never stops a call and sends nothing
+       smallprint watch [--file smallprint.lock] [--no-notify] -- <server command> [its arguments]   start an MCP server through a watcher that passes every message through unchanged and, when the server's tools change, warns on stderr and with a desktop notification (--no-notify leaves the notification out); it never stops a call and sends nothing
        smallprint scan-chats [--yes] [--json]                   look through your agents' conversation logs on this machine for keys and passwords, after asking first; each finding is shown masked, nothing is sent and no log is changed
        smallprint --version
        smallprint version --check                              ask npm for the newest published version and say whether this one is it; sends one request and nothing else, and plain --version asks nothing

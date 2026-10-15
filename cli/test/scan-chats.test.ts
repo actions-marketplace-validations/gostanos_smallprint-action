@@ -203,7 +203,7 @@ describe("smallprint scan-chats", () => {
 describe("help", () => {
   it("names both commands", () => {
     const help = execFileSync(process.execPath, ["--import", TSX, MAIN, "--help"], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: mkdtempSync(join(tmpdir(), "sp-help-")) } });
-    expect(help).toContain("smallprint watch [--file smallprint.lock] -- <server command> [its arguments]");
+    expect(help).toContain("smallprint watch [--file smallprint.lock] [--no-notify] -- <server command> [its arguments]");
     expect(help).toContain("smallprint scan-chats [--yes] [--json]");
   }, 30_000);
 });
