@@ -55,7 +55,8 @@ export interface CheckReply {
   grade: string;
   criterion: string;
   headline: string;
-  results: { name: string; status: string; detail: string; url: string | null }[];
+  /** `host` and `kind` are the agent app and the kind the record answered for, when it says them; the HTML report matches rows with them. */
+  results: { name: string; status: string; detail: string; url: string | null; host?: string; kind?: string; newest?: NewestChange }[];
   cardUrl?: string;
 }
 
@@ -67,7 +68,7 @@ export async function readCheckReply(res: Response, where: string): Promise<Chec
     grade: j.grade,
     criterion: str(j.criterion),
     headline: str(j.headline),
-    results: j.results.map((x) => ({ name: str(x.name), status: str(x.status), detail: str(x.detail), url: typeof x.url === "string" ? x.url : null })),
+    results: j.results.map((x) => ({ name: str(x.name), status: str(x.status), detail: str(x.detail), url: typeof x.url === "string" ? x.url : null, ...(typeof x.host === "string" ? { host: x.host } : {}), ...(typeof x.kind === "string" ? { kind: x.kind } : {}), ...(newestOf(x.newest) ? { newest: newestOf(x.newest)! } : {}) })),
     ...(typeof j.cardUrl === "string" ? { cardUrl: j.cardUrl } : {}),
   };
 }
@@ -112,4 +113,14 @@ export async function readAssetReply<T>(res: Response, where: string): Promise<T
   const j = await json(res, where);
   if (!j.asset || typeof j.asset !== "object" || !Array.isArray(j.versions) || !Array.isArray(j.releases) || !Array.isArray(j.advisories)) throw unexpected("no asset, versions, releases or advisories", where);
   return j as T;
+}
+
+/** The newest change on record for one result, as the site answers it since decision 511; anything else is left out. */
+export interface NewestChange { version: string; severity: string; criterion: string; detectedAt: string }
+function newestOf(v: unknown): NewestChange | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  return typeof o.version === "string" && typeof o.severity === "string" && typeof o.criterion === "string" && typeof o.detectedAt === "string"
+    ? { version: o.version, severity: o.severity, criterion: o.criterion, detectedAt: o.detectedAt }
+    : null;
 }
