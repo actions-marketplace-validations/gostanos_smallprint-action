@@ -4,12 +4,12 @@
  * The command runs as a child process in front of a fake stdio MCP server (fixtures/fake-mcp.mjs).
  */
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { compareFingerprints, formatWatchEntries, lockDigest, makeListHandler, Observer, serverLabel, watchLogFile, watchLogSince, type WatchLogEntry } from "../src/watch";
+import { compareFingerprints, formatWatchEntries, lockDigest, makeListHandler, notificationFor, Observer, serverLabel, watchLogFile, watchLogSince, type WatchLogEntry } from "../src/watch";
 import { fingerprintTools, toolsDigest } from "../src/fingerprint";
 import { inferPackage, parseClaudeJson } from "../src/parse";
 
@@ -24,18 +24,24 @@ const FETCH = { name: "fetch", description: "Fetch a page.", inputSchema: { type
 const rpc = (id: number, method: string, params: unknown = {}) => JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
 const SECRET = "sk-proj-Zq8vT2mWx9LkR4pN7sJ3hB6yC1fD5gA0eU8iO2tKwXzQvMnB";
 
-interface Run { stdout: Buffer; stderr: string; code: number | null; home: string; config: string; recv: Buffer; sent: Buffer }
+interface Run { stdout: Buffer; stderr: string; code: number | null; home: string; config: string; recv: Buffer; sent: Buffer; notified: string }
 
-/** Write `input` to `smallprint watch -- node fake-mcp.mjs`, close stdin, and collect everything. */
+/**
+ * Write `input` to `smallprint watch -- node fake-mcp.mjs`, close stdin, and collect everything. Stand-ins for the
+ * desktop notifiers come first on the PATH, so a test run never shows a real notification; `notified` is the log they
+ * write (after waiting briefly for one started in the background).
+ */
 function runWatch(input: Buffer, opts: { tools: unknown[][]; config?: string; home?: string; extra?: string[] }): Promise<Run> {
   const home = opts.home ?? mkdtempSync(join(tmpdir(), "sp-watch-home-"));
   const config = opts.config ?? join(home, ".config");
   const recv = join(home, `recv-${Math.random()}`);
   const sent = join(home, `sent-${Math.random()}`);
+  const notifiedLog = join(home, `notified-${Math.random()}`);
+  const path = fakeNotifiers(home, notifiedLog);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--import", TSX, MAIN, "watch", ...(opts.extra ?? []), "--", process.execPath, FAKE, "--base", "not-a-url"], {
       cwd: home,
-      env: { PATH: process.env.PATH ?? "", HOME: home, XDG_CONFIG_HOME: config, FAKE_TOOLS: JSON.stringify(opts.tools), FAKE_RECV: recv, FAKE_SENT: sent },
+      env: { PATH: path, HOME: home, XDG_CONFIG_HOME: config, FAKE_TOOLS: JSON.stringify(opts.tools), FAKE_RECV: recv, FAKE_SENT: sent },
       stdio: ["pipe", "pipe", "pipe"],
     });
     const out: Buffer[] = [];
@@ -43,7 +49,7 @@ function runWatch(input: Buffer, opts: { tools: unknown[][]; config?: string; ho
     child.stdout.on("data", (c: Buffer) => out.push(c));
     child.stderr.on("data", (c: Buffer) => (err += c.toString("utf8")));
     child.on("error", reject);
-    child.on("close", (code) => resolve({ stdout: Buffer.concat(out), stderr: err, code, home, config, recv: existsSync(recv) ? readFileSync(recv) : Buffer.alloc(0), sent: existsSync(sent) ? readFileSync(sent) : Buffer.alloc(0) }));
+    child.on("close", (code) => void readSoon(notifiedLog).then((notified) => resolve({ stdout: Buffer.concat(out), stderr: err, code, home, config, recv: existsSync(recv) ? readFileSync(recv) : Buffer.alloc(0), sent: existsSync(sent) ? readFileSync(sent) : Buffer.alloc(0), notified })));
     // in two writes, the second splitting a multi-byte character, so the watcher's reading of partial chunks is exercised
     const cut = input.indexOf(Buffer.from("é")) + 1;
     child.stdin.write(input.subarray(0, cut > 0 ? cut : input.length));
@@ -113,6 +119,69 @@ describe("a changed description between two tools/list answers", () => {
     expect(out).toContain('the tool "fetch" was added');
     expect(check()).not.toContain("smallprint watch noticed");
   }, 60_000);
+});
+
+/** A folder holding stand-ins for osascript and notify-send that write their arguments to `log`, first on the PATH. */
+function fakeNotifiers(home: string, log: string): string {
+  const bin = join(home, "bin");
+  mkdirSync(bin, { recursive: true });
+  for (const name of ["osascript", "notify-send"]) {
+    writeFileSync(join(bin, name), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${log}'\n`);
+    chmodSync(join(bin, name), 0o755);
+  }
+  return `${bin}:${process.env.PATH ?? ""}`;
+}
+
+/** Wait for a notifier started in the background to have written, or give up after half a second. */
+async function readSoon(file: string): Promise<string> {
+  for (let i = 0; i < 10 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 50));
+  return existsSync(file) ? readFileSync(file, "utf8") : "";
+}
+
+describe("a change also shows as a desktop notification (Nick, 15 Oct 2026)", () => {
+  const desktop = process.platform === "darwin" || process.platform === "linux";
+
+  it.skipIf(!desktop)("once, with the server's name and a count, and never the server's own text", async () => {
+    const input = session(rpc(4, "test/notify") + rpc(5, "tools/list"));
+    const r = await runWatch(input, { tools: [[SEARCH, FETCH], [SEARCH_CHANGED, FETCH]] });
+    expect(r.stdout.equals(r.sent)).toBe(true);
+    const shown = r.notified;
+    const name = process.execPath.split("/").pop()!;
+    expect(shown).toContain(`${name} changed`);
+    expect(shown).toContain("1 change to what it tells your agent. Nothing was stopped. Run npx smallprint check to see it.");
+    expect(shown).not.toContain("ssh"); // the new description stays out of the notification
+    expect(shown.match(/changed/g)).toHaveLength(1);
+  }, 30_000);
+
+  it.skipIf(!desktop)("not when the list is unchanged, and not with --no-notify", async () => {
+    const quiet = await runWatch(session(rpc(4, "tools/list")), { tools: [[SEARCH], [SEARCH]] });
+    expect(quiet.stderr).toBe("");
+    expect(quiet.notified).toBe("");
+
+    const off = await runWatch(session(rpc(4, "test/notify") + rpc(5, "tools/list")), { tools: [[SEARCH], [SEARCH_CHANGED]], extra: ["--no-notify"] });
+    expect(off.stderr).toContain('the tool "search" has a new description'); // the warning line still comes
+    expect(off.notified).toBe("");
+  }, 30_000);
+
+  it("words a lock difference apart from a change, and keeps every control character out", () => {
+    expect(notificationFor("acme", [{ change: "lock" } as never])).toEqual({ title: "acme differs from your lock", body: "Its list of tools does not match the fingerprint in smallprint.lock. Nothing was stopped. Run npx smallprint check to see it." });
+    expect(notificationFor("acme", [{ change: "added" }, { change: "removed" }, { change: "lock" }] as never).body).toBe("2 changes to what it tells your agent. Nothing was stopped. Run npx smallprint check to see them.");
+    const n = notificationFor("evil\n\u001b[2Jname\u202e", [{ change: "added" } as never]);
+    expect(`${n.title}${n.body}`).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u202e]/);
+  });
+
+  it("a notifier that fails is never an error for the watcher", () => {
+    const state = mkdtempSync(join(tmpdir(), "sp-watch-state-"));
+    const warned: string[] = [];
+    let calls = 0;
+    const handle = makeListHandler({ command: "acme-mcp", args: [], stateDir: state, lockText: null, warn: (l) => warned.push(l), notify: () => { calls++; throw new Error("no desktop"); } }, () => null);
+    handle([SEARCH], false);
+    expect(calls).toBe(0); // the first list it sees is only remembered
+    expect(() => handle([SEARCH_CHANGED], true)).not.toThrow();
+    handle([SEARCH_CHANGED], true);
+    expect(calls).toBe(1);
+    expect(warned).toHaveLength(1);
+  });
 });
 
 describe("a broken watcher keeps the traffic flowing", () => {

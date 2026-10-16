@@ -213,7 +213,18 @@ export interface WatcherOptions {
   /** smallprint.lock's text when there is one; read once at the start. */
   lockText: string | null;
   warn: (line: string) => void;
+  /** A desktop notification on this machine when a list differs; best effort, never an error. */
+  notify?: (title: string, body: string) => void;
   now?: () => Date;
+}
+
+/** The notification for a list that differs: the server's name from the user's own config and a count, never the server's text. */
+export function notificationFor(name: string, changes: readonly Omit<WatchLogEntry, "time" | "server">[]): { title: string; body: string } {
+  // the name comes from the user's own config, but a path can still hold any character; none of them reach the notification
+  const label = visible(name).replace(/[\t\n]/g, " ");
+  const tools = changes.filter((c) => c.change !== "lock").length;
+  if (!tools) return { title: `${label} differs from your lock`, body: "Its list of tools does not match the fingerprint in smallprint.lock. Nothing was stopped. Run npx smallprint check to see it." };
+  return { title: `${label} changed`, body: `${tools} change${tools === 1 ? "" : "s"} to what it tells your agent. Nothing was stopped. Run npx smallprint check to see ${tools === 1 ? "it" : "them"}.` };
 }
 
 /** The comparing and recording part: given a whole tool list, compare, warn, log, store. Throws on a file it cannot write. */
@@ -242,6 +253,7 @@ export function makeListHandler(o: WatcherOptions, serverVersion: () => string |
       const lines = changes.map((c) => JSON.stringify({ time: now, server: label, ...c, ...(afterListChanged ? { afterListChanged: true } : {}) } satisfies WatchLogEntry)).join("\n");
       appendFileSync(watchLogFile(o.stateDir), lines + "\n", { mode: 0o600 });
       o.warn(warningLine(label, changes));
+      if (o.notify) { try { const n = notificationFor(label, changes); o.notify(n.title, n.body); } catch { /* no desktop */ } }
     }
     const next: Snapshot = { server: label, seen: now, digest, tools: fps, ...(lockWarned ? { lockWarned } : {}) };
     writeFileSync(file, JSON.stringify(next), { mode: 0o600 });
@@ -258,6 +270,7 @@ export interface RunWatchOptions {
   stderr: Writable;
   env?: NodeJS.ProcessEnv;
   forwardSignals?: boolean;
+  notify?: (title: string, body: string) => void;
 }
 
 /** Start the server, pass everything through, watch a copy. Resolves with the server's exit code once its output is written. */
@@ -287,7 +300,7 @@ export function runWatch(o: RunWatchOptions): Promise<number> {
     const onClient = (chunk: Buffer) => { if (!watching) return; try { observer!.fromClient(chunk); } catch (e) { stop(e); } };
     const onServer = (chunk: Buffer) => { if (!watching) return; try { observer!.fromServer(chunk); } catch (e) { stop(e); } };
     try {
-      const handler = makeListHandler({ command: o.command, args: o.args, stateDir: o.stateDir, lockText: o.lockText, warn: say }, () => observer?.serverVersion ?? null);
+      const handler = makeListHandler({ command: o.command, args: o.args, stateDir: o.stateDir, lockText: o.lockText, warn: say, ...(o.notify ? { notify: o.notify } : {}) }, () => observer?.serverVersion ?? null);
       observer = new Observer((tools, after) => handler(tools, after));
       o.stdin.on("data", onClient);
       child.stdout.on("data", onServer);
