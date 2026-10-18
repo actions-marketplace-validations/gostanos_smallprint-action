@@ -131,14 +131,18 @@ describe("check --html with grades", () => {
     expect(r.requests).toEqual(["https://smallprint.dev/api/check"]);
     const html = readFileSync(join(m.cwd, "graded.html"), "utf8");
     // bad-srv high, meh-srv watch, ok-srv and proj-srv clean, notes-skill unlisted
-    expect(tiles(html)).toEqual({ "servers and skills found": 5, "graded high in their newest change": 1, "with a high or critical advisory on record": 1, "marked watch by the record": 1, "not in the catalog yet": 1, "instruction file line to read": 1 });
-    expect(html).toContain('aria-label="What the record says of the 5 found: 1 high or critical, 1 watch, 1 not in the catalog yet, 2 no advisory on record"');
-    expect(html).toContain('<span><i style="background:var(--green)"></i>no advisory on record 2</span>');
+    expect(tiles(html)).toEqual({ "servers and skills found": 5, "graded high in their newest change": 1, "with a high or critical advisory on record": 1, "marked watch by the record": 1, "not in the catalog": 1, "instruction file line to read": 1 });
+    expect(html).toContain('aria-label="What the record says of the 5 found: 1 high or critical, 1 watch, 1 not in the catalog, 2 no advisory on record covers this version"');
+    expect(html).toContain('<span><i style="background:var(--green)"></i>no advisory on record covers this version 2</span>');
     const row = (name: string) => html.split("\n").find((l) => l.includes(`<b>${name}</b>`)) ?? "";
     expect(row("bad-srv")).toContain('<span class="pill high">high</span>');
     expect(row("meh-srv")).toContain('<span class="pill medium">watch</span>');
-    expect(row("ok-srv")).toContain('<span class="pill ok">no advisory</span>');
+    expect(row("ok-srv")).toContain('<span class="pill ok">no advisory on record covers this version</span>');
+    expect(html).not.toContain('<span class="pill ok">no advisory</span>');
     expect(row("notes-skill")).toContain('<span class="pill none">not in catalog</span>');
+    // an entry the record does not hold has no newest-change line and no pill for it, and no row says "no change" (audit of 16 Oct 2026)
+    expect(row("notes-skill")).not.toContain("No change to its small print on record.");
+    expect(html).not.toContain(">no change<");
     expect(html).toContain("<b>D</b>. bad-srv is inside the range of a high advisory on record.");
     expect(row("ok-srv")).toContain('<td class="num">n/a</td>');
     expect(row("bad-srv")).toContain('<td class="num">1.0.0</td>');
@@ -172,6 +176,7 @@ describe("check --html with grades", () => {
     expect(html).toContain("9.9.9 · 2026-10-14: names an address &lt;img src=x&gt;");
     expect(html).not.toContain("<img src=x>");
     expect(html).toContain("No change to its small print on record.");
+    expect(html).toContain('<span class="pill none">none on record</span>');
     expect(html).toMatch(/graded high in their newest change/);
   }, 60_000);
 

@@ -1,8 +1,9 @@
 /**
  * The grading rules, on this machine, for a line added to an instruction file (decision 470). A line that reaches
  * CLAUDE.md, AGENTS.md or a rules file is read by the agent as part of its system prompt, so the command grades each
- * added line with the rules the record grades published tool text with: moving data out, override, hidden text and
- * sensitive destination, with the negation, quotation and folding helpers they rely on. Nothing here is sent.
+ * added line with the rules the record grades published tool text with: moving data out, override, hidden text,
+ * unconfirmed action and sensitive destination, with the negation, quotation and folding helpers they rely on. Nothing
+ * here is sent.
  *
  * The command has no runtime dependencies, so the block between the two marker lines is a copy of the record's own
  * rules, declaration for declaration, from packages/normalize/src/severity.ts in the Small Print repository. A test
@@ -32,12 +33,14 @@ export const EXFIL_PATTERNS: readonly RegExp[] = [
 ];
 export const OVERRIDE_PATTERNS: readonly RegExp[] = [
   /\bdo not (?:tell|mention|reveal|disclose|inform|show|alert)\b/i,
-  /\bwithout (?:asking|telling|confirming|notifying|informing|the user)/i,
   /\bignore (?:all |any |the |your )?(?:previous|prior|above|earlier|system|other|safety) (?:instructions?|prompts?|rules?|guidelines?)\b/i,
   // "system prompt" only with a verb that acts on it: the bare phrase names a data field as often as an instruction
   // ("fetch a record (system prompt, knowledge, config)" sat on the home page graded high, 24 Sep 2026, decision 220)
   /\b(?:ignore|ignoring|disregard|override|overrid(?:e|ing)|overwrite|replace|forget|bypass|reveal|leak|disclose|print|show|dump|exfiltrate|extract)\b[^.\n]{0,40}\bsystem (?:prompt|instructions?)\b/i,
   /\bsystem (?:prompt|instructions?)\b[^.\n]{0,30}\b(?:is|are) (?:now|replaced|overridden|ignored|void)\b/i,
+];
+export const UNCONFIRMED_PATTERNS: readonly RegExp[] = [
+  /\bwithout (?:asking|telling|confirming|notifying|informing|the user)/i,
 ];
 export const SENSITIVE_PATTERNS: readonly RegExp[] = [
   // a secret-bearing path named without a verb that reads or moves it: worth a look, not an alarm
@@ -188,11 +191,32 @@ const ENDS_WITH_PARTICIPLE = /\b(?:leaked|exposed|logged|revealed|embedded|commi
 const LEADS_WITH_SECRET = new RegExp(`^\\s+${SECRET_NOUNS}`, "i");
 const NO_SECRET_BEFORE = /\b(?:no|without(?:\s+(?:an?|any))?)\s+$/i;
 const NO_SECRET_AT_END = new RegExp(`\\b(?:no|without(?:\\s+(?:an?|any))?)\\s+${SECRET_NOUNS}$`, "i");
+const LEFT_OUT_WORD = `(?:\\b(?:omit|omits|omitting|exclude|excludes|excluding|except|redact|redacts|redacting)(?:\\s+(?:the|any|all|your|other))?\\s+|\\bnon-)`;
+const LEFT_OUT_AT_END = new RegExp(`${LEFT_OUT_WORD}${SECRET_NOUNS}$`, "i");
+const LEFT_OUT_RUN = new RegExp(`${LEFT_OUT_WORD}${SECRET_NOUNS}(?:\\s*,?\\s*(?:(?:and|or|nor)\\s+)?(?:(?:the|any|all|your|other)\\s+)?${SECRET_NOUNS})*`, "gi");
+const ANY_SECRET = new RegExp(SECRET_NOUNS, "i");
+function onlyLeftOutSecrets(text: string, index: number, length: number): boolean {
+  const after = text.slice(index + length, index + length + 200);
+  const stop = after.search(/[.\n]/);
+  const clause = text.slice(index, index + length) + (stop < 0 ? after : after.slice(0, stop));
+  return !ANY_SECRET.test(clause.replace(LEFT_OUT_RUN, " "));
+}
 const NEGATED_BEFORE_WITHOUT = /\b(?:never|not|n['\u2019]t|cannot|nothing|nobody|no one)(?:\s+(?!only\b)[\w'\u2019-]+){0,2}\s+$/i;
 const CLAUSE_OPENS_NEGATED = /^\s*(?:[-*>|#]+\s*)*(?:never|do not|don['\u2019]t|nothing|no one|nobody)\b[^,;:\u2014\u2013]*$/i;
 const PUSH_WORDS = /\b(?:hesitate|wait|stop|pause|bother|delay|hold|fail|forget|worry|skip asking|ask)\b/i;
 const WITHOUT_THE_USER_DOING = /^(?:\s+(?:typing|having to|needing to|lifting|clicking|re-?entering|entering)\b|\/)/i;
 const HEADER_CONTEXT = /\b(?:as|in)\s+(?:the\s+|an?\s+)?[`'"]?(?:authorization\b|x-api-key\b|[\w-]+\s+header\b)/i;
+const HEADER_VALUE = /\b(?:authorization|x-api-key)["'`]?\s*:\s*["'`]?\s*(?:(?:bearer|basic|token)\s+)?["'`<${(]*([\w-]+(?: [\w-]+){0,2})$/i;
+const NAMED_CREDENTIAL = /github|gitlab|npm|aws|ssh|private|signing|session|cookie/i;
+const ADDRESS = /https?:\/\/|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\b/i;
+function namesAddress(text: string, index: number, length: number): boolean {
+  return ADDRESS.test(sentenceAt(text.replace(/\\\r?\n/g, (s) => " ".repeat(s.length)), index, length));
+}
+function isHeaderCredential(text: string, index: number, match: string): boolean {
+  const value = HEADER_VALUE.exec(match);
+  const named = HEADER_CONTEXT.test(text.slice(index, index + match.length + 60)) || (value !== null && !NAMED_CREDENTIAL.test(value[1]!));
+  return named && !namesAddress(text, index, match.length);
+}
 const TELL_TO = /^\s+(?:the user|the person|the merchant|anyone|them|users?)\s+to\s+\w/i;
 const SECRET_AS_CREDENTIAL = new RegExp(`^\\w+\\b[^.\\n]{0,15}?\\bwith\\s+(?:your|an?|the)\\s+${SECRET_NOUNS}$`, "i");
 const ADJECTIVE_PARTICIPLE = new RegExp(`^(?:leaked|exposed|logged|revealed|embedded|hardcoded|hard-coded|committed|stolen|compromised|rotated|revoked)\\s+${SECRET_NOUNS}$`, "i");
@@ -236,6 +260,7 @@ function* survivingMatches(re: RegExp, text: string, state?: { capped: boolean; 
       // address in the same sentence is still caught by the address rule
       if (SECRET_AS_CREDENTIAL.test(m[0])) continue;
       if (NO_SECRET_AT_END.test(m[0])) continue;
+      if (re === SECRET_NEAR_VERB && LEFT_OUT_AT_END.test(m[0]) && onlyLeftOutSecrets(text, m.index, m[0].length)) continue;
       if (/^without\b/i.test(m[0]) && NEGATED_BEFORE_WITHOUT.test(text.slice(Math.max(0, m.index - 40), m.index))) continue;
       if (/^without\b/i.test(m[0])) {
         const before = text.slice(0, m.index);
@@ -245,6 +270,7 @@ function* survivingMatches(re: RegExp, text: string, state?: { capped: boolean; 
       }
       if (/^without the user$/i.test(m[0]) && WITHOUT_THE_USER_DOING.test(text.slice(m.index + m[0].length, m.index + m[0].length + 20))) continue;
       if (re === SECRET_NEAR_VERB && HEADER_CONTEXT.test(text.slice(m.index, m.index + m[0].length + 40))) continue;
+      if (re === SECRET_NEAR_VERB && isHeaderCredential(text, m.index, m[0])) continue;
       if (/^do not tell$/i.test(m[0]) && TELL_TO.test(text.slice(m.index + m[0].length, m.index + m[0].length + 40))) continue;
       // the same adjective at the end of a "secret and verb" match: "API keys and exposed credentials" lists two problems
       if (ENDS_WITH_PARTICIPLE.test(m[0]) && LEADS_WITH_SECRET.test(text.slice(m.index + m[0].length))) continue;
@@ -258,6 +284,9 @@ export function findExfilMatches(rawText: string): string[] {
 export function findOverrideMatches(rawText: string): string[] {
   return findGraded(OVERRIDE_PATTERNS, rawText);
 }
+export function findUnconfirmedMatches(rawText: string): string[] {
+  return findGraded(UNCONFIRMED_PATTERNS, rawText);
+}
 export function findSensitiveMatches(rawText: string): string[] {
   return findGraded(SENSITIVE_PATTERNS, rawText);
 }
@@ -267,7 +296,7 @@ export function findSensitiveMatches(rawText: string): string[] {
 export interface LineMatch {
   severity: "high" | "medium";
   /** The rule's plain name, as the grading page (https://smallprint.dev/how-we-grade) names it. */
-  rule: "hidden text" | "moving data out" | "override" | "sensitive destination";
+  rule: "hidden text" | "moving data out" | "override" | "unconfirmed action" | "sensitive destination";
   /** What the rule says the text does, in the words the entry pages print beside a grade. */
   says: string;
   /** The words that matched, or for hidden text each character found with its code point. */
@@ -277,16 +306,18 @@ export interface LineMatch {
 /** The entry pages' words for each rule (driftCriterion in severity.ts), without the subject the page puts in front. */
 export const RULE_SAYS = {
   "hidden text": "contains characters a reader cannot see, or a word that mixes letters from two alphabets",
-  "moving data out": "names a secret, a destination, or a way to move data off the machine",
-  override: "tells the agent not to mention something to the user, or to ignore its instructions",
-  "sensitive destination": "names a destination in ordinary product terms, without an address",
+  "moving data out": "contains words this rule looks for, such as an API key, an access token or a password near \"send\", \"copy\" or \"post\", or a web address after \"send\" or \"post\"",
+  override: "contains words this rule looks for, such as \"do not tell\" or \"ignore previous instructions\"",
+  "unconfirmed action": "contains words this rule looks for, such as \"without asking\", \"without telling\" or \"without confirming\"",
+  "sensitive destination": "contains words this rule looks for, such as the path of a file that holds secrets (~/.ssh) on its own, or \"send\" or \"upload\" before a destination such as \"analytics\"",
 } as const;
 
 /**
  * Every rule that matches one added line, high first, in the order the record weighs them: hidden text, moving data
- * out, override. Hidden characters are always high. The sensitive-destination rule is medium and is named only when no
- * high rule matched, as on the record, where a change takes the highest grade that applies. An empty list means no
- * rule matched; the line is still shown, because it was added.
+ * out, override. Hidden characters are always high. The unconfirmed-action rule ("without asking" and the like) and the
+ * sensitive-destination rule are medium, and one of them, in that order, is named only when no high rule matched, as on
+ * the record, where a change takes the highest grade that applies and the first rule that gives it. An empty list means
+ * no rule matched; the line is still shown, because it was added.
  */
 export function gradeLine(text: string): LineMatch[] {
   const out: LineMatch[] = [];
@@ -297,8 +328,10 @@ export function gradeLine(text: string): LineMatch[] {
   const override = findOverrideMatches(text);
   if (override.length) out.push({ severity: "high", rule: "override", says: RULE_SAYS.override, found: override });
   if (!out.length) {
-    const sensitive = findSensitiveMatches(text);
-    if (sensitive.length) out.push({ severity: "medium", rule: "sensitive destination", says: RULE_SAYS["sensitive destination"], found: sensitive });
+    const unconfirmed = findUnconfirmedMatches(text);
+    const sensitive = unconfirmed.length ? [] : findSensitiveMatches(text);
+    if (unconfirmed.length) out.push({ severity: "medium", rule: "unconfirmed action", says: RULE_SAYS["unconfirmed action"], found: unconfirmed });
+    else if (sensitive.length) out.push({ severity: "medium", rule: "sensitive destination", says: RULE_SAYS["sensitive destination"], found: sensitive });
   }
   return out;
 }

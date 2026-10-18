@@ -59,9 +59,9 @@ const record = (over: Partial<GateRecord> = {}): GateRecord => ({
   asset: { latestVersion: "3.0.0", url: "https://smallprint.dev/a/npm/x" },
   advisories: [],
   releases: [
-    { from: "2.0.0", to: "3.0.0", publishedAt: "2026-09-03", worst: "high", identical: false },
-    { from: "1.0.0", to: "2.0.0", publishedAt: "2026-09-02", worst: "medium", identical: false },
-    { from: "0.9.0", to: "1.0.0", publishedAt: "2026-09-01", worst: "info", identical: true },
+    { from: "2.0.0", to: "3.0.0", publishedAt: "2026-09-03", worst: "high", identical: false, changes: [{ field: "tool.description", severity: "high" }] },
+    { from: "1.0.0", to: "2.0.0", publishedAt: "2026-09-02", worst: "medium", identical: false, changes: [{ field: "tool.schema", severity: "medium" }, { field: "version.bump", severity: "info" }] },
+    { from: "0.9.0", to: "1.0.0", publishedAt: "2026-09-01", worst: "info", identical: true, changes: [] },
   ],
   versions: [
     { version: "3.0.0", publishedAt: "2026-09-03", read: true, contentHash: "c3" },
@@ -86,26 +86,30 @@ describe("the gate (fixes 6 and 11)", () => {
   it("fails when what runs here is not the version in the lock and the small print differs between the two", () => {
     const moved = gateServer(record(), "3.0.0", { version: "1.0.0" });
     expect(moved).toMatchObject({ mark: "!", changed: true });
-    expect(moved.words[0]).toBe("small print changed between 1.0.0 in the lock and 3.0.0: 2 releases, worst high");
+    expect(moved.words[0]).toBe("a change to the small print is on record between 1.0.0 in the lock and 3.0.0: 2 releases, worst high");
     expect(gateServer(record(), "2.0.0", { version: "1.0.0" }).words[0]).toContain("1 release, worst medium");
-    // not pinned: the next start runs the latest, which is what is compared with the lock
+    // not pinned: the newest on record is what is compared with the lock
     expect(gateServer(record(), null, { version: "1.0.0" })).toMatchObject({ changed: true });
     // moved between two versions with the same tool text: nothing changed
-    expect(gateServer(record(), "1.0.0", { version: "0.9.0" })).toMatchObject({ mark: "ok", changed: false });
+    const same = gateServer(record(), "1.0.0", { version: "0.9.0" });
+    expect(same).toMatchObject({ mark: "ok", changed: false });
+    expect(same.words[0]).toBe("no change to the small print is on record between 0.9.0 in the lock and 1.0.0");
   });
   it("says unknown, never unchanged, when there is no tool text on record to compare", () => {
     // npm:@upstash/context7-mcp at 4.1.0 on 4 Oct 2026: read, no tools declared, and the gate said "ok, unchanged"
     const noTools = gateServer(record(), "0.8.0", undefined);
     expect(noTools).toMatchObject({ mark: "?", unknown: true, changed: false });
-    expect(noTools.words[0]).toBe("version 0.8.0 was read and declares no tools of its own, so there is no tool text to compare");
+    expect(noTools.words[0]).toBe("the record holds no tool text for version 0.8.0, so there is nothing to compare");
     expect(gateServer(record(), "0.7.0", undefined).words[0]).toBe("version 0.7.0 is on the record but its small print was not read");
     expect(gateServer(record(), "0.1.0", undefined).words[0]).toBe("version 0.1.0 is not on the record");
     expect(gateServer(record(), "3.0.0", { version: "0.8.0" })).toMatchObject({ mark: "?", unknown: true, changed: false });
     expect(gateServer(record(), null, undefined)).toMatchObject({ mark: "?", unknown: true });
     expect(JSON.stringify([noTools.words, gateServer(record(), "0.7.0", undefined).words])).not.toContain("unchanged");
   });
-  it("still says when the record's digest for the locked version changed", () => {
-    expect(gateServer(record(), "1.0.0", { version: "1.0.0", recordSha256: "other" })).toMatchObject({ mark: "!", changed: true });
+  it("still says when the record's digest for the locked version changed, as an unknown: a fingerprint alone is not a change (decision 523)", () => {
+    const v = gateServer(record(), "1.0.0", { version: "1.0.0", recordSha256: "other" });
+    expect(v).toMatchObject({ mark: "?", changed: false, unknown: true });
+    expect(v.words[0]).toContain("the record's digest for 1.0.0 changed since the lock was written");
   });
   it("exits 3 whenever a covering advisory is present, so a change or --strict never hides it", () => {
     expect(gateExit({ changed: 1, advisories: 1, unknown: 0 }, false)).toBe(3);
@@ -219,7 +223,8 @@ describe("end of input at a question, and an answer the command does not expect 
     it("the gate counts a server whose answer it cannot read as unknown and goes on", async () => {
       const r = await run(["gate"]);
       expect(r.out).toContain("the record's answer could not be read by this version of the command");
-      expect(r.out).toContain("Gate: clear. 1 server, 1 unknown (--strict fails on these).");
+      expect(r.out).toContain("Gate: 1 server checked, 1 unknown. The exit code is 0, and --strict fails on unknowns.");
+      expect(r.out).not.toContain("Gate: clear");
       expect(r.code).toBe(0);
     }, 30_000);
   });
@@ -244,18 +249,18 @@ describe("every code file of a mod is watched (fix 9)", () => {
     const { home, cwd, root } = modHome();
     expect(modModulePaths(root)).toEqual([join(root, "hooks", "first.js"), join(root, "hooks", "second.js"), join(root, "hooks", "lib", "helper.js")]);
     const before = findMods(home, cwd)[0]!;
-    expect(before.capabilities).toEqual(["changes the tool descriptions Claude reads"]);
+    expect(before.capabilities).toEqual(["can change the tool descriptions Claude reads"]);
     const lockBefore = buildLock([], readInstructionFiles(home, cwd), { home, cwd });
     expect(lockBefore.files.filter((f) => f.kind === "Claude Code mod code, home")).toHaveLength(3);
 
     writeFileSync(join(root, "hooks", "second.js"), "export function register(on) { on('ui.render', async ($, e, next) => { await $.http.get('https://collect.example'); return next(e) }) }\n");
     const second = findMods(home, cwd)[0]!;
-    expect(second.capabilities).toContain("uses the network");
+    expect(second.capabilities).toContain("can use the network");
     expect(second.sha256).not.toBe(before.sha256);
     expect(diffLock(lockBefore, buildLock([], readInstructionFiles(home, cwd), { home, cwd })).filesChanged.map((f) => f.path)).toEqual(["~/.claude/plugins/synced/two-files/hooks/second.js"]);
 
     writeFileSync(join(root, "hooks", "lib", "helper.js"), "export const helper = (x) => $.process.run('sh', ['-c', x]);\n");
-    expect(findMods(home, cwd)[0]!.capabilities).toContain("runs programs");
+    expect(findMods(home, cwd)[0]!.capabilities).toContain("can run programs");
   });
   it("never follows an import out of the plugin", () => {
     const { root } = modHome();

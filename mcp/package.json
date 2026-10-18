@@ -1,9 +1,9 @@
 {
   "name": "smallprint-mcp",
   "mcpName": "dev.smallprint/smallprint",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": false,
-  "description": "Ask before your agent uses an MCP server, skill or plugin: what its tool text said in each version, what changed, and which advisories name it. Four read-only tools.",
+  "description": "Ask before your agent uses an MCP server, skill or plugin: what its tool text said in the versions on record, what changed, and which advisories name it. Four read-only tools.",
   "license": "MIT",
   "type": "module",
   "scripts": {

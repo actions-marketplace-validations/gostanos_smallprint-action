@@ -88,11 +88,11 @@ export function schedulePlan(opts: { platform?: NodeJS.Platform; home: string; e
 }
 
 // ---------------------------------------------------------------------------
-// Level four: the reporter the user's agent cannot reach. A root-owned job runs
-// a dependency-free Python file with the system interpreter, reads the user's
-// files, and posts the same hashes. Its token is root-owned, mode 600. An agent
-// running as the user cannot read the token, forge a report, or stop the job.
-// Everything it touches is root-owned: interpreter, helper, plist, token, log.
+// Level four: a root-owned job runs a dependency-free Python file with the
+// system interpreter, reads the user's files, and posts the same hashes. Its
+// copy of the token is root-owned, mode 600; the token it was copied from stays
+// where it was (decision 529). Everything it installs is root-owned: interpreter,
+// helper, plist, token copy, log.
 // ---------------------------------------------------------------------------
 
 export interface SystemPlan {
@@ -148,7 +148,7 @@ export function systemUnits(p: SystemPlan): { service: { path: string; body: str
   const paths = systemPaths("linux");
   const q = (s: string) => s.replace(/"/g, '\\"');
   const service = `[Unit]
-Description=Small Print level-four reporter (root-owned; the user's agent cannot reach it)
+Description=Small Print level-four reporter (root-owned)
 
 [Service]
 Type=oneshot

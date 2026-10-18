@@ -119,12 +119,19 @@ export function rowsOf(items: readonly Discovered[], opts: { underProject: (path
   });
 }
 
+/**
+ * The words for the record's "clean" status, the check page's own: the status covers an entry with advisories that name
+ * other versions, so "no advisory" stood beside a line naming two (pass 5 audit of 16 Oct 2026). The terminal's column,
+ * the pill and the summary all print these.
+ */
+export const NO_COVERING_ADVISORY = "no advisory on record covers this version";
+
 /** The record's status words, as the pill shows them, and the pill's colour. "clean" is never shown as safe (decision 210). */
 const STATUS: Record<string, { words: string; tone: string }> = {
   critical: { words: "critical", tone: "high" },
   high: { words: "high", tone: "high" },
   watch: { words: "watch", tone: "medium" },
-  clean: { words: "no advisory", tone: "ok" },
+  clean: { words: NO_COVERING_ADVISORY, tone: "ok" },
   unlisted: { words: "not in catalog", tone: "none" },
   remote: { words: "hosted", tone: "low" },
   local: { words: "local", tone: "low" },
@@ -189,7 +196,7 @@ function summary(d: ReportData): string {
   if (d.lock) {
     tiles.push(tile(c.lockChanged, "changed since your lock", "hi"));
     tiles.push(tile(c.lockNew, "not in your lock", "med"));
-  } else if (d.grades) tiles.push(tile(c.unlisted, "not in the catalog yet"));
+  } else if (d.grades) tiles.push(tile(c.unlisted, "not in the catalog"));
   if (d.linesHidden) {
     const changed = d.files.filter((f) => f.status === "changed" || f.status === "removed").length;
     tiles.push(tile(changed, changed === 1 ? "instruction file changed since the last run" : "instruction files changed since the last run", "med"));
@@ -203,8 +210,8 @@ function summary(d: ReportData): string {
     const parts = [
       { n: c.severe, colour: "var(--red)", words: "high or critical" },
       { n: c.watch, colour: "var(--amber)", words: "watch" },
-      { n: c.unlisted, colour: "var(--ink-3)", words: "not in the catalog yet" },
-      { n: c.clean, colour: "var(--green)", words: "no advisory on record" },
+      { n: c.unlisted, colour: "var(--ink-3)", words: "not in the catalog" },
+      { n: c.clean, colour: "var(--green)", words: NO_COVERING_ADVISORY },
       { n: c.other, colour: "var(--rule)", words: "hosted or local, not graded" },
       { n: c.missing, colour: "var(--rule-soft)", words: "not in the record's answer" },
     ].filter((p) => p.n > 0);
@@ -224,11 +231,14 @@ function lockCell(l: LockState | undefined): string {
 
 const GRADE_TONE: Record<string, string> = { critical: "high", high: "high", medium: "medium", low: "low", info: "low" };
 
-/** The newest change and its grade, or a plain line when the record has no change for the entry. */
+/**
+ * The newest change and its grade, or a plain line when the record has no change for the entry. An entry the record does
+ * not hold gets neither: it showed a green "no change" pill until the audit of 16 Oct 2026, and nothing was compared.
+ */
 function newestCells(r: RecordResult | null | undefined): string {
-  if (!r) return `<td></td><td></td>`;
+  if (!r || r.status === "unlisted") return `<td></td><td></td>`;
   const n = r.newest;
-  if (!n) return `<td><span class="why">No change to its small print on record.</span></td><td>${pill("ok", "no change")}</td>`;
+  if (!n) return `<td><span class="why">No change to its small print on record.</span></td><td>${pill("none", "none on record")}</td>`;
   return `<td><span class="why">${esc(n.version)} · ${esc(n.detectedAt.slice(0, 10))}: ${esc(n.criterion)}</span></td><td>${pill(GRADE_TONE[n.severity] ?? "none", n.severity)}</td>`;
 }
 
@@ -326,8 +336,8 @@ ${errors}
 /** The lede: what this page is and what the check sent to make it. Kept to what the CLI page says leaves the machine. */
 function lede(d: ReportData): string {
   const stayed = "Your configs, keys, paths and file contents stayed on this machine.";
-  if (d.grades) return `Every MCP server and skill your agent apps have installed, looked up on the record${d.lock ? ", and compared with your lock file" : ""}. To look them up, the check sent only server names, package identities, version numbers, the host each one belongs to, and fingerprints of each skill's files, the same as a plain check. ${stayed}`;
-  const what = `Every MCP server and skill your agent apps have installed${d.lock ? ", compared with your lock file" : ""}.`;
+  if (d.grades) return `The MCP servers and skills in the agent configs this check reads, looked up on the record${d.lock ? ", and compared with your lock file" : ""}. To look them up, the check sent server names, package identities, version numbers, the host each one belongs to, and fingerprints of each skill's files, the same as a plain check. ${stayed}`;
+  const what = `The MCP servers and skills in the agent configs this check reads${d.lock ? ", compared with your lock file" : ""}.`;
   if (d.attempted) return `${what} To look them up, the check sent server names, package identities, version numbers, the host each one belongs to, and fingerprints of each skill's files, and no grades came back. ${stayed}`;
   return `${what} Nothing was sent, and your configs, keys, paths and file contents stayed on this machine.`;
 }

@@ -177,8 +177,8 @@ describe("discovery of the clients added in decision 458", () => {
   });
 
   it("judges env values where they are and keeps none of them", () => {
-    expect(one("opencode", "everything").hygiene.join(" ")).toContain("env MY_API_KEY holds a plaintext secret");
-    expect(one("goose", "filesystem").hygiene.join(" ")).toContain("env GITHUB_TOKEN holds a plaintext secret");
+    expect(one("opencode", "everything").hygiene.join(" ")).toContain("env MY_API_KEY looks like a plaintext secret");
+    expect(one("goose", "filesystem").hygiene.join(" ")).toContain("env GITHUB_TOKEN looks like a plaintext secret");
     expect(one("kiro", "web-search").hygiene.join(" ")).toContain("env BRAVE_API_KEY");
     // the payload a check or sync sends: names, versions, hosts, never a value, a path or a query string
     const payload = JSON.stringify(toUpload(r.items));

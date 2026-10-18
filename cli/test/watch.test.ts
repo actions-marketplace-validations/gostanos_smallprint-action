@@ -132,9 +132,10 @@ function fakeNotifiers(home: string, log: string): string {
   return `${bin}:${process.env.PATH ?? ""}`;
 }
 
-/** Wait for a notifier started in the background to have written, or give up after half a second. */
+/** Wait for a notifier started in the background to have written, or give up after three seconds: half a second was
+ *  too short while the whole suite ran, and the test failed a deploy's check on 16 Oct 2026 (decision 568). */
 async function readSoon(file: string): Promise<string> {
-  for (let i = 0; i < 10 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 50));
+  for (let i = 0; i < 60 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 50));
   return existsSync(file) ? readFileSync(file, "utf8") : "";
 }
 
