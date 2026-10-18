@@ -40,6 +40,14 @@ export function compareTools(served: readonly ServedTool[], recorded: readonly R
   return { same: !added.length && !removed.length && !changed.length, added, removed, changed };
 }
 
+/**
+ * A lookup on smallprint.dev that got no usable answer, in words that say so: a 429, a 5xx or no answer at all is not a
+ * fact about the record (pass 4 audit of 16 Oct 2026: each was printed as "not on the record").
+ */
+export function lookupFailed(status: number | null): string {
+  return status == null ? "the lookup on smallprint.dev got no answer" : `the lookup on smallprint.dev failed (HTTP ${status})`;
+}
+
 /** An address without its query string, fragment or trailing slash, for matching a configured URL to the registry's. */
 export function plainUrl(u: string): string | null {
   try {
@@ -93,13 +101,16 @@ async function reply(res: Response, id: number): Promise<Rpc | null> {
 
 export type LiveRead = { ok: true; tools: ServedTool[] } | { ok: false; why: string };
 
+/** A 401 or 403, said as the status it was: a 403 is not a request to sign in (pass 3 audit of 16 Oct 2026). */
+const refused = (status: number) => `it answered HTTP ${status}, and the live check does not sign in`;
+
 /** A hosted server, over streamable HTTP: initialize, initialized, tools/list with its pages. Nothing else is called. */
 export async function readHttp(url: string, timeoutMs = 15_000, f: typeof fetch = fetch): Promise<LiveRead> {
   const base: Record<string, string> = { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": PROTOCOL_VERSION, "user-agent": "smallprint-live/1" };
   const post = (body: string, session: string | null) => f(url, { method: "POST", headers: session ? { ...base, "mcp-session-id": session } : base, body, signal: AbortSignal.timeout(timeoutMs) });
   let first: Response;
   try { first = await post(rpc(1, "initialize", initParams), null); } catch (e) { return { ok: false, why: `no answer (${(e as Error).message})` }; }
-  if (first.status === 401 || first.status === 403) return { ok: false, why: "it asks for a sign-in, which the live check does not do" };
+  if (first.status === 401 || first.status === 403) return { ok: false, why: refused(first.status) };
   if (first.status === 404 || first.status === 405) return { ok: false, why: "it does not speak streamable HTTP (an older SSE server); the live check does not read those yet" };
   if (!first.ok) return { ok: false, why: `initialize answered ${first.status}` };
   const session = first.headers.get("mcp-session-id");
@@ -111,7 +122,7 @@ export async function readHttp(url: string, timeoutMs = 15_000, f: typeof fetch 
   for (let id = 2; id < 22; id++) {
     const res = await post(rpc(id, "tools/list", cursor ? { cursor } : {}), session).catch((e: Error) => e);
     if (res instanceof Error) return { ok: false, why: `tools/list: ${res.message}` };
-    if (res.status === 401 || res.status === 403) return { ok: false, why: "tools/list asks for a sign-in, which the live check does not do" };
+    if (res.status === 401 || res.status === 403) return { ok: false, why: `tools/list: ${refused(res.status)}` };
     const m = await reply(res, id);
     if (!m?.result) return { ok: false, why: m?.error?.message ? `tools/list: ${m.error.message}` : "tools/list gave no result" };
     tools.push(...toServed(m.result.tools));
@@ -140,7 +151,7 @@ export function sseEvents(text: string): { endpoint: string | null; messages: Rp
 export async function readSse(url: string, timeoutMs = 15_000, f: typeof fetch = fetch): Promise<LiveRead> {
   let stream: Response;
   try { stream = await f(url, { method: "GET", headers: { accept: "text/event-stream", "user-agent": "smallprint-live/1" }, signal: AbortSignal.timeout(timeoutMs * 3) }); } catch (e) { return { ok: false, why: `no answer (${(e as Error).message})` }; }
-  if (stream.status === 401 || stream.status === 403) return { ok: false, why: "it asks for a sign-in, which the live check does not do" };
+  if (stream.status === 401 || stream.status === 403) return { ok: false, why: refused(stream.status) };
   if (!stream.ok || !(stream.headers.get("content-type") ?? "").includes("text/event-stream") || !stream.body) return { ok: false, why: `its stream answered ${stream.status}` };
   const reader = stream.body.getReader();
   const dec = new TextDecoder();

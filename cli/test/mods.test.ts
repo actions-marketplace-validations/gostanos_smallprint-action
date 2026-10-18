@@ -29,13 +29,13 @@ describe("what a mod's code says it does", () => {
       on('session.start', async ($) => { await $.process.run('curl', []); await $.prompt.submit({ text: 'hi', asUser: true }); await $.fs.read('a') })
     }`;
     expect(modCapabilities(code)).toEqual([
-      "changes the tool descriptions Claude reads",
-      "changes what Claude is told: the system prompt, your prompts or a skill's text",
-      "sends text to Claude as if you typed it",
-      "allows, blocks or replaces tool calls",
-      "uses the network",
-      "runs programs",
-      "reads files",
+      "can change the tool descriptions Claude reads",
+      "can change what Claude is told: the system prompt, your prompts or a skill's text",
+      "can send text to Claude as if you typed it",
+      "can allow, block or replace tool calls",
+      "can use the network",
+      "can run programs",
+      "can read files",
     ]);
     expect(modCapabilities(`on('ui.render', { component: 'Spinner' }, async ($, e, next) => next(e))`)).toEqual([]);
   });
@@ -54,7 +54,7 @@ describe("finding mods and the plugins the install list misses", () => {
     expect(skillsDirPlugins(home, cwd).map((p) => p.name)).toEqual(["deploy-helper"]);
     expect(claudeCodePlugins(home, cwd).map((p) => p.name)).toEqual(["spinner-count", "deploy-helper"]);
     const mods = findMods(home, cwd);
-    expect(mods.map((m) => [m.plugin, m.capabilities])).toEqual([["spinner-count", ["changes the tool descriptions Claude reads", "uses the network"]]]);
+    expect(mods.map((m) => [m.plugin, m.capabilities])).toEqual([["spinner-count", ["can change the tool descriptions Claude reads", "can use the network"]]]);
     // the plugin saved under skills/ is now read like an installed one: its server is found
     expect(discover({ home, cwd }).items.find((i) => i.kind === "mcp")).toMatchObject({ name: "plugin:deploy-helper:deploy" });
     // the mod's code is a watched instruction file
@@ -69,7 +69,20 @@ describe("finding mods and the plugins the install list misses", () => {
     const before = modBaseline(findMods(home, cwd));
     writeFileSync(join(root, "hooks", "register.js"), `on('ui.render', async ($, e, next) => next(e)); await $.http.fetch('https://collect.example')`);
     const [r] = compareMods(findMods(home, cwd), before);
-    expect(r).toMatchObject({ first: false, added: ["uses the network"] });
+    expect(r).toMatchObject({ first: false, added: ["can use the network"] });
+  });
+
+  // pass 3 audit of 16 Oct 2026: the labels say what the code can do; a run before then stored "uses the network", and
+  // the first run after the upgrade must not report that as a new ability
+  it("reads a baseline stored in the earlier words as the same abilities", () => {
+    const home = mkdtempSync(join(tmpdir(), "sp-mods4-"));
+    const root = join(home, ".claude", "plugins", "synced", "m");
+    mod(root, "m", `on('tool.describe', async ($, e, next) => next(e)); await $.http.fetch('https://x.example')`);
+    const cwd = mkdtempSync(join(tmpdir(), "sp-cwd-"));
+    const [m] = findMods(home, cwd);
+    expect(m!.capabilities).toEqual(["can change the tool descriptions Claude reads", "can use the network"]);
+    const [r] = compareMods([m!], { [m!.module]: ["changes the tool descriptions Claude reads", "uses the network"] });
+    expect(r).toMatchObject({ first: false, added: [] });
   });
 
   it("never follows a hooks module that points outside the plugin", () => {

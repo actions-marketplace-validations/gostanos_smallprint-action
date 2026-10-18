@@ -115,6 +115,7 @@ const VERSION_SHAPE = /^[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}$/;
 const cleanVersion = (v: string | null | undefined): string | null => (v && VERSION_SHAPE.test(v) ? v : null);
 const SECRET_KEY = /(key|token|secret|password|passwd|credential|auth)/i;
 const SECRET_VALUE = /^(sk-|ghp_|github_pat_|xox[abp]-|AKIA|AIza|-----BEGIN)|^[A-Za-z0-9_-]{32,}$/;
+const ENV_REFERENCE = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$|^\$[A-Za-z_][A-Za-z0-9_]*$/;
 
 export interface DiscoveredServer {
   kind: "mcp";
@@ -272,8 +273,10 @@ export function envHygiene(entry: Record<string, unknown>, configPath: string): 
   const env = entry.env;
   if (env && typeof env === "object") {
     for (const [k, v] of Object.entries(env as Record<string, unknown>)) {
-      if (typeof v !== "string" || !v) continue;
-      if (SECRET_KEY.test(k) || SECRET_VALUE.test(v)) out.push(`env ${k} holds a plaintext secret in ${configPath}`);
+      // a reference to a variable set elsewhere (${GITHUB_TOKEN}, $GITHUB_TOKEN) holds no secret in this file; and a match on
+      // the name alone is a guess, so the line says what it looks like, not what it holds (pass 4 audit of 16 Oct 2026)
+      if (typeof v !== "string" || !v || ENV_REFERENCE.test(v.trim())) continue;
+      if (SECRET_KEY.test(k) || SECRET_VALUE.test(v)) out.push(`env ${k} looks like a plaintext secret in ${configPath}`);
     }
   }
   return out;

@@ -29,15 +29,16 @@ import { detectFirewalls, firewallsForUpload } from "./firewalls";
 import { compareInstructions, formatInstructions, FORMER_HASHES_NOTE, pathHash, readInstructionFiles, sendsFormerHashes, toFileUpload, type InstructionBaseline } from "./instructions";
 import { compareMods, findMods, modBaseline, type ModBaseline } from "./mods";
 import { gateExit, gateServer, type GateRecord } from "./gate";
+import { releaseGrade } from "./release";
 import { ask, readAssetReply, readCheckReply, readSyncReply, UnexpectedReply, type CheckReply, type FileChange } from "./ask";
-import { plural, readWords, type RecordAnswer } from "./record";
+import { baselineDateWords, kindOf, plural, readWords, remoteAnswerWords, type RecordAnswer } from "./record";
 import { isPrivateHost, withoutPrivateHosts } from "./private-host";
 import { machineSalt, SALT_SHAPE, saltFile } from "./salt";
 import { buildLock, diffIsEmpty, diffLock, displayPath, formatDiff, formatNotCompared, itemKey, LOCK_FILE, parseLock, projectItems, rootSkillKeys, underProject, type LockScope, sarifLog } from "./lock";
-import { HTML_FILE, matchResults, renderReport, rowsOf, type LockState, type ReportData, type ReportFile } from "./html-report";
+import { HTML_FILE, matchResults, NO_COVERING_ADVISORY, renderReport, rowsOf, type LockState, type ReportData, type ReportFile } from "./html-report";
 import { formatLineChange, keyId, lockedLineChange, lockLineMemory, rememberLines, type LineChange } from "./lines";
 import type { DiscoveredServer } from "./parse";
-import { compareTools, launchFor, plainUrl, readHosted, readStdio, type RecordTool, type ToolComparison } from "./live";
+import { compareTools, launchFor, lookupFailed, plainUrl, readHosted, readStdio, type RecordTool, type ToolComparison } from "./live";
 import { launchdPlist, schtasksCommand, systemdUnits, schedulePlan, systemLaunchdPlist, systemPaths, systemPlan, systemUnits } from "./schedule";
 import { formatWatchEntries, runWatch, watchLogSince } from "./watch";
 import { chatSources, countByKind, formatScan, SCAN_QUESTION, scanChats } from "./chatscan";
@@ -76,7 +77,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "1.5.1";
+const VERSION = "1.5.2";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -222,7 +223,7 @@ function reportInstructions(): { files: ReportFile[]; errors: string[] } {
   if (changed) console.log(`  ${changed} changed since the last run. If that was not you, read the file before your agent does.`);
   if (fresh && !state.instructions) console.log("  Recorded. From the next run on, a rewrite of any of these is reported here.");
   console.log("  This record is a file on this machine (~/.config/smallprint/state.json). An agent that can write files can change it as well as the files above.");
-  console.log("  To keep a copy it cannot reach, run sync with a free account; the record then lives on smallprint.dev and keeps every change. schedule runs that sync every six hours. https://smallprint.dev/cli#record");
+  console.log("  To keep a copy off this machine, run sync: the record then lives on smallprint.dev and keeps every change sync reports. https://smallprint.dev/cli#record");
   writeState({ ...state, instructions: baseline, ...(key ? { linesKey: keyId(key) } : {}) });
   return { files: forReport, errors };
 }
@@ -423,12 +424,25 @@ async function live(found: ReturnType<typeof discover>): Promise<number> {
   console.log("Asking each server what it serves now, and comparing names and descriptions with the record for its version.");
   console.log("What the servers answer stays on this machine; only a registry name, a version or a host is sent to look the record up.\n");
   let differs = 0;
-  const get = async (url: string) => { const r = await fetch(url, { headers: { accept: "application/json", "user-agent": `smallprint-cli/${VERSION}` }, signal: TIMEOUT() }); return r.ok ? r.json() : null; };
+  // the servers actually compared: a "?" line compared nothing, so the closing line never says "nothing differs" for it
+  let compared = 0;
+  // a lookup that failed is said as a failed lookup, never as a fact about the record (pass 4 audit of 16 Oct 2026): only
+  // an answer, or a 404, says what the record holds
+  const get = async <T,>(url: string): Promise<{ body: T | null; failed?: string }> => {
+    try {
+      const r = await fetch(url, { headers: { accept: "application/json", "user-agent": `smallprint-cli/${VERSION}` }, signal: TIMEOUT() });
+      if (r.ok) return { body: (await r.json()) as T };
+      return r.status === 404 ? { body: null } : { body: null, failed: lookupFailed(r.status) };
+    } catch {
+      return { body: null, failed: lookupFailed(null) };
+    }
+  };
   const receipt = async (cn: string, version: string) => {
     const [registry, ...rest] = cn.split(":");
-    return (await get(`${base}/api/receipt/${registry}/${rest.join(":").split("/").map(encodeURIComponent).join("/")}/${encodeURIComponent(version)}`).catch(() => null)) as { tools?: RecordTool[] | null } | null;
+    return get<{ tools?: RecordTool[] | null }>(`${base}/api/receipt/${registry}/${rest.join(":").split("/").map(encodeURIComponent).join("/")}/${encodeURIComponent(version)}`);
   };
   const report = (label: string, cmp: ToolComparison, version: string) => {
+    compared++;
     if (cmp.same) { console.log(`  same     ${label}: every tool name and description matches the record, ${version}`); return; }
     differs++;
     console.log(`  DIFFERS  ${label}: what it serves now is not what the record holds, ${version}`);
@@ -443,15 +457,16 @@ async function live(found: ReturnType<typeof discover>): Promise<number> {
     const host = new URL(url).host;
     // a private address is never on the record, and asking about one would tell smallprint.dev about this network
     if (isPrivateHost(host)) { console.log(`  ?        ${s.name} (${host}): a private address, so it was not looked up on the record and there is nothing to compare`); continue; }
-    const rec = (await get(`${base}/api/remote?host=${encodeURIComponent(host)}`).catch(() => null)) as { entries?: { canonicalName: string; url: string; version: string | null }[] } | null;
+    const rec = await get<{ entries?: { canonicalName: string; url: string; version: string | null }[] }>(`${base}/api/remote?host=${encodeURIComponent(host)}`);
     const mine = plainUrl(url);
-    const entry = rec?.entries?.find((e) => plainUrl(e.url) === mine);
+    const entry = rec.body?.entries?.find((e) => plainUrl(e.url) === mine);
     const read = await readHosted(url);
     if (!read.ok) { console.log(`  ?        ${s.name} (${host}): ${read.why}`); continue; }
+    if (rec.failed) { console.log(`  ?        ${s.name} (${host}): serves ${read.tools.length} tools; ${rec.failed}, so nothing was compared`); continue; }
     if (!entry || !entry.version) { console.log(`  ?        ${s.name} (${host}): serves ${read.tools.length} tools; this address is not on the record, so there is nothing to compare`); continue; }
     const r = await receipt(entry.canonicalName, entry.version);
-    if (!r?.tools) { console.log(`  ?        ${s.name} (${host}): the record has no tool list for ${entry.version}`); continue; }
-    report(`${s.name} (${entry.canonicalName})`, compareTools(read.tools, r.tools), entry.version === "latest" ? "what it served when the record last read it" : `version ${entry.version}`);
+    if (!r.body?.tools) { console.log(`  ?        ${s.name} (${host}): ${r.failed ? `${r.failed}, so nothing was compared` : `the record has no tool list for ${entry.version}`}`); continue; }
+    report(`${s.name} (${entry.canonicalName})`, compareTools(read.tools, r.body.tools), entry.version === "latest" ? "what it served when the record last read it" : `version ${entry.version}`);
   }
   if (withLocal && local.length) {
     const plan = local.map((s) => ({ s, l: launchFor(s) })).filter((x) => x.l && x.l.command);
@@ -469,12 +484,12 @@ async function live(found: ReturnType<typeof discover>): Promise<number> {
         const read = await readStdio(l!);
         if (!read.ok) { console.log(`  ?        ${s.name}: ${read.why}`); continue; }
         const r = await receipt(s.canonicalName!, s.version);
-        if (!r?.tools) { console.log(`  ?        ${s.name}: the record has not read the tools of ${s.version}`); continue; }
-        report(`${s.name} (${s.canonicalName} ${s.version})`, compareTools(read.tools, r.tools), `version ${s.version}`);
+        if (!r.body?.tools) { console.log(`  ?        ${s.name}: ${r.failed ? `${r.failed}, so nothing was compared` : `the record has no tool list for ${s.version}`}`); continue; }
+        report(`${s.name} (${s.canonicalName} ${s.version})`, compareTools(read.tools, r.body.tools), `version ${s.version}`);
       }
     } else console.log("Nothing started.");
   }
-  console.log(differs ? `\n${differs} server${differs === 1 ? " serves" : "s serve"} something the record does not hold for that version. If you did not change it, read the entry page before your agent uses it.` : "\nNothing served differs from the record.");
+  console.log(differs ? `\n${differs} server${differs === 1 ? " serves" : "s serve"} something the record does not hold for that version. If you did not change it, read the entry page before your agent uses it.` : compared ? `\nNothing served differs from the record in the ${plural(compared, "server")} compared.` : "\nNo server was compared with the record.");
   return differs ? 2 : 0;
 }
 
@@ -619,8 +634,11 @@ async function check(): Promise<number> {
   }
   console.log(`\nGrade ${r.grade}: ${r.headline}`);
   console.log(`  ${r.criterion}`);
-  // "clean" is the status key the record answers with; on screen it reads as what it is, no advisory on record, never as safe (decision 210)
-  for (const x of r.results) console.log(`  ${pad(x.status === "clean" ? "no advisory" : x.status, 12)} ${pad(x.name, 40)} ${x.detail}${x.url ? `  ${x.url}` : ""}`);
+  // "clean" is the status key the record answers with; on screen it reads as what it is, never as safe (decision 210), and
+  // never as "no advisory" beside a line that names advisories on other versions (pass 5 audit of 16 Oct 2026)
+  const statusWords = (s: string) => (s === "clean" ? NO_COVERING_ADVISORY : s);
+  const width = Math.max(12, ...r.results.map((x) => statusWords(x.status).length));
+  for (const x of r.results) console.log(`  ${pad(statusWords(x.status), width)} ${pad(x.name, 40)} ${x.detail}${x.url ? `  ${x.url}` : ""}`);
   if (r.cardUrl) console.log(`\nShareable card: ${r.cardUrl}`);
   else console.log("\nAdd --share for a card link you can post.");
   const code = finish(0, { reply: r });
@@ -628,7 +646,7 @@ async function check(): Promise<number> {
   return brief || code;
 }
 
-/** The one question at the end of check: watch these every morning? */
+/** The one question at the end of check: watch these in the daily brief? */
 async function offerBrief(payload: ReturnType<typeof toUpload>): Promise<number> {
   if (flag("no-signup")) return 0;
   let email = opt("email")?.trim();
@@ -639,7 +657,7 @@ async function offerBrief(payload: ReturnType<typeof toUpload>): Promise<number>
       console.log(`\nThis machine signed up as ${state.signedUp}. Pin changes with sync; run with --email to sign up another address.`);
       return 0;
     }
-    email = (await ask("\nWatch these every morning? Type your email to start: 30 days of Pro, no credit card required; Free after that keeps 25 pins and the daily brief. Your address is sent with the list above, this computer's name and your time zone. Enter to skip (--no-signup silences this): ")).trim();
+    email = (await ask("\nWatch these in the daily brief? Type your email to start. New accounts get 30 days of Pro, no credit card required. Your address is sent with the list above, this computer's name and your time zone. Enter to skip (--no-signup silences this): ")).trim();
     if (!email) return 0;
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -735,7 +753,7 @@ async function sync(): Promise<number> {
   const firewalls = firewallsForUpload(detectFirewalls());
   say(`Agent firewalls: ${firewalls.length ? firewalls.join(", ") : "none detected"}${firewalls.length ? " (name only is sent)" : ""}`);
   say(`\nWill pin ${payload.length} item${payload.length === 1 ? "" : "s"} to your account as machine "${label}" via ${base}/api/sync, and record ${instructionFiles.length} instruction file${instructionFiles.length === 1 ? "" : "s"} there.`);
-  say(`Sent: names, versions, hosts, file hashes (for a skill, its SKILL.md hash and one hash over all its files); for instruction files a kind label, a hash of the path ${key ? "keyed with a salt that stays on this machine" : "(not keyed: no salt file could be written on this machine)"}, and the content hash; the machine label; the names of any agent firewalls found. Not sent: paths, file lists, config values, env vars, tokens, file contents, anything about a firewall but its name.`);
+  say(`Sent: names, versions, hosts, file hashes (for a skill, its SKILL.md hash and one hash over all its files); for instruction files a kind label, a hash of the path ${key ? "keyed with a salt that stays on this machine" : "(not keyed: no salt file could be written on this machine)"}, the content hash, and for a JSON file the name of each top-level setting, or of each server in an MCP config, with a hash of it; for a file in this project, a hash of this folder; the machine label; the names of any agent firewalls found${every > 0 ? "; this run's interval" : ""}. What each command sends, and when, is listed on the privacy page: https://smallprint.dev/legal/privacy`);
   if (migrate) say(FORMER_HASHES_NOTE);
   if (flag("dry-run")) {
     for (const f of fileUpload.files) console.log(`  ${pad(f.kind, 44)} ${f.sha256.slice(0, 12)}  path hash ${f.pathHash.slice(0, 12)}${f.formerPathHash ? `  earlier unkeyed path hash ${f.formerPathHash.slice(0, 12)}` : ""}${f.formerSha256 ? `  earlier unkeyed content hash ${f.formerSha256.slice(0, 12)}` : ""}`);
@@ -1007,10 +1025,11 @@ async function scheduleSystem(): Promise<number> {
   }
   console.log(`Installed the level-four reporter for account "${user}" as machine "${plan.label}":`);
   console.log(`  helper  ${paths.helper} (root-owned, ${python}, standard library only; read it, it is short)`);
-  console.log(`  token   ${paths.token} (root-owned, mode 600: the account and its agent cannot read it)`);
+  console.log(`  token   ${paths.token} (root-owned, mode 600)`);
   console.log(`  job     ${paths.job} (runs now, then every ${plan.everySeconds / 3600} hours)`);
   console.log(`  log     ${paths.log}`);
-  console.log("It reads the account's instruction files, MCP configs and skill folders, and sends a kind label and hashes for each file and each skill, and nothing else. It does not pin MCP servers to the brief and sends no firewall names; sync from the account does those. Remove with: sudo smallprint schedule --uninstall --system");
+  // what it sends is said once, on the privacy page: the list here left out the names of settings, servers and skills (pass 6 audit of 16 Oct 2026)
+  console.log("It reads the account's instruction files, MCP configs and skill folders and reports them in the same form as a sync. It does not pin MCP servers to the brief and sends no firewall names; sync from the account does those. What each command sends, and when, is listed on the privacy page: https://smallprint.dev/legal/privacy. Remove with: sudo smallprint schedule --uninstall --system");
   console.log("What it does not cover: files in project folders (it runs from the home directory), and an attacker who already has root.");
   return 0;
 }
@@ -1034,7 +1053,7 @@ async function schedule(): Promise<number> {
   const plistPath = join(home, "Library", "LaunchAgents", "dev.smallprint.sync.plist");
   const units = systemdUnits(schedulePlan({ home, execPath: process.execPath, version: VERSION, label: "", token: "" }));
   if (flag("status")) {
-    if (plat === "darwin") console.log(existsSync(plistPath) ? `Installed: ${plistPath} (launchd, every 6 hours). Log: ~/Library/Logs/smallprint/sync.log` : "Not installed. smallprint schedule --install --label \"this machine\"");
+    if (plat === "darwin") console.log(existsSync(plistPath) ? `Installed: ${plistPath} (launchd). Log: ~/Library/Logs/smallprint/sync.log` : "Not installed. smallprint schedule --install --label \"this machine\"");
     else if (plat === "linux") console.log(existsSync(units.timer.path) ? `Installed: ${units.timer.path} (systemd user timer). Status: systemctl --user status smallprint-sync.timer` : "Not installed. smallprint schedule --install --label \"this machine\"");
     else console.log("On Windows the schedule is a Task Scheduler entry named \"Small Print sync\": schtasks /Query /TN \"Small Print sync\"");
     return 0;
@@ -1077,7 +1096,7 @@ async function schedule(): Promise<number> {
     return 0;
   }
   if (!flag("install")) {
-    console.log("usage: smallprint schedule --install --label \"work laptop\" [--every 6]   (SMALLPRINT_TOKEN=sp_...)\n       smallprint schedule --status | --uninstall\nInstalls a job on this machine that runs \"smallprint sync\" every six hours: it sends names, versions, hosts and hashes, never paths or contents, and logs locally. You install it; --uninstall removes it.");
+    console.log("usage: smallprint schedule --install --label \"work laptop\" [--every 6]   (SMALLPRINT_TOKEN=sp_...)\n       smallprint schedule --status | --uninstall\nInstalls a job on this machine that runs \"smallprint sync\" every six hours and logs locally; each run sends what sync sends, and its interval. You install it; --uninstall removes it.");
     return 2;
   }
   const token = readToken();
@@ -1101,7 +1120,7 @@ async function schedule(): Promise<number> {
       /* first install */
     }
     execFileSync("launchctl", ["bootstrap", domain, path], { stdio: "inherit" });
-    console.log(`Installed ${path} (readable by you only; it holds your token). It runs "smallprint sync --scheduled" now, then every ${plan.everySeconds / 3600} hours at a random moment inside a fifth of that, as machine "${label}", with npx pinned to smallprint@${VERSION}. Each run sends names, versions, hosts and hashes; never paths, contents or config values.`);
+    console.log(`Installed ${path} (readable by you only; it holds your token). It runs "smallprint sync --scheduled" now, then every ${plan.everySeconds / 3600} hours at a random moment inside a fifth of that, as machine "${label}", with npx pinned to smallprint@${VERSION}. Each run sends what sync sends, and its interval.`);
     console.log("Log: ~/Library/Logs/smallprint/sync.log. Remove with: smallprint schedule --uninstall");
     return 0;
   }
@@ -1124,10 +1143,10 @@ async function schedule(): Promise<number> {
 
 
 /**
- * `smallprint gate` (decision 145): the pre-session check. Every server this machine runs is looked up on the record,
- * and the command exits non-zero when the small print of an installed version changed since the lock, or when an
- * advisory's range covers an installed version. One request per server, the registry name only, nothing else sent. Made for
- * a shell hook or a launcher: `smallprint gate && claude`.
+ * `smallprint gate` (decision 145): the pre-session check. Each server here with a registry name is looked up on the
+ * record, and the command exits non-zero when a change to the small print is on record between the lock and the pinned
+ * version (the newest on record when none is pinned), or when an advisory's range covers an installed version. One request per server, carrying the registry name.
+ * Made for a shell hook or a launcher: `smallprint gate && claude`.
  */
 async function gate(): Promise<number> {
   const found = discover();
@@ -1173,7 +1192,8 @@ async function gate(): Promise<number> {
   }
   const code = gateExit(counts, strict);
   const tally = `${counts.changed} changed, ${counts.advisories} with ${counts.advisories === 1 ? "an advisory that covers the version here" : "advisories that cover the version here"}, ${counts.unknown} unknown`;
-  console.log(code ? `Gate: ${tally}. Exit ${code}.` : `Gate: clear. ${plural(items.length, "server")}, ${counts.unknown} unknown${counts.unknown ? " (--strict fails on these)" : ""}.`);
+  // "clear" only when every server was answered: an unknown is no answer, not a pass (pass 5 audit of 16 Oct 2026)
+  console.log(code ? `Gate: ${tally}. Exit ${code}.` : counts.unknown ? `Gate: ${plural(items.length, "server")} checked, ${counts.unknown} unknown. The exit code is 0, and --strict fails on unknowns.` : `Gate: clear. ${plural(items.length, "server")}, 0 unknown.`);
   return code;
 }
 
@@ -1195,19 +1215,24 @@ async function show(): Promise<number> {
     console.error(`could not reach ${base}: ${(err as Error).message}`);
     return 1;
   }
-  if (res.status === 404) { console.log(`${spec}: not in the catalog. It gets a trust page on the next catalog pass if a registry lists it.`); return 1; }
+  if (res.status === 404) { console.log(`${spec}: not in the catalog.`); return 1; }
   if (!res.ok) { console.error(`${url} answered ${res.status}`); return 1; }
-  const j = await readAssetReply<RecordAnswer & { asset: { canonicalName: string; displayName: string; kind: string; registry: string; description: string | null; url?: string }; baseline: { version: string; publishedAt: string | null; read?: boolean } | null; remoteRead?: { checkedAt: string; status: string; toolCount: number | null } | null; advisories: { id: string; severity: string; summary: string }[]; releases: { from: string | null; to: string; publishedAt: string | null; worst: string | null; identical: boolean; summary: string }[] }>(res, url);
-  console.log(`${j.asset.displayName}  (${j.asset.kind} on ${j.asset.registry})`);
+  const j = await readAssetReply<RecordAnswer & { asset: { canonicalName: string; displayName: string; kind: string; registry: string; description: string | null; url?: string }; baseline: { version: string; publishedAt: string | null; read?: boolean; firstSeen?: boolean; firstSeenAt?: string | null } | null; remoteRead?: { checkedAt: string; status: string; toolCount: number | null } | null; advisories: { id: string; severity: string; summary: string }[]; releases: { from: string | null; to: string; publishedAt: string | null; worst: string | null; identical: boolean; summary: string; changes?: { field: string; severity?: string }[] }[] }>(res, url);
+  // the entry page's word for what it is, never "mcp" for npm's security holding package (pass 6 audit of 16 Oct 2026)
+  console.log(`${j.asset.displayName}  (${kindOf(j) ?? j.asset.kind} on ${j.asset.registry})`);
   if (j.asset.description) console.log(`  ${j.asset.description.replace(/\s+/g, " ").slice(0, 160)}`);
   // how the pinned version was read is the site's answer (its read flag and read state), never a second rule here
-  if (j.baseline) console.log(`  baseline ${j.baseline.version}${j.baseline.publishedAt ? `, published ${j.baseline.publishedAt.slice(0, 10)}` : ""}, ${readWords(j)}`);
-  if (j.remoteRead) console.log(`  answered our request ${j.remoteRead.checkedAt.slice(0, 10)}: ${j.remoteRead.status === "ok" ? `${plural(j.remoteRead.toolCount ?? 0, "tool")} listed` : j.remoteRead.status}`);
+  // "published" only when the site says the date is the source's; otherwise "first seen", with the day Small Print first
+  // saw the version, as on the entry page and the home page's example (pass 3 and pass 5 audits of 16 Oct 2026)
+  if (j.baseline) { const d = baselineDateWords(j.baseline); console.log(`  baseline ${j.baseline.version}${d ? `, ${d}` : ""}, ${readWords(j)}`); }
+  if (j.remoteRead) console.log(`  asked ${remoteAnswerWords(j.remoteRead)}`);
   console.log(`  advisories on record: ${j.advisories.length}${j.advisories.length ? ` (worst ${j.advisories[0]!.severity}: ${j.advisories[0]!.id})` : ""}`);
   const rel = j.releases.slice(0, 5);
   if (rel.length) {
     console.log(`  last ${rel.length === 1 ? "release" : `${rel.length} releases`}:`);
-    for (const r of rel) console.log(`    ${r.from ?? "first read"} -> ${r.to}${r.publishedAt ? `  ${r.publishedAt.slice(0, 10)}` : ""}  ${r.identical ? "identical small print" : `${r.worst ?? "graded"}: ${String(r.summary ?? "").replace(/\s+/g, " ").slice(0, 90)}`}`);
+    // a release that holds no change prints the site's summary alone ("no change on record"), never a grade beside it
+    // the grade is the entry page's: the worst change to the small print, not an install script beside it (pass 5 audit)
+    for (const r of rel) console.log(`    ${r.from ?? "first read"} -> ${r.to}${r.publishedAt ? `  ${r.publishedAt.slice(0, 10)}` : ""}  ${r.identical ? "identical small print" : r.changes && !r.changes.length ? String(r.summary ?? "") : `${releaseGrade(r) ?? "graded"}: ${String(r.summary ?? "").replace(/\s+/g, " ").slice(0, 90)}`}`);
   }
   // the page's own address as the site writes it (one rule on the site, decision 205), not a copy of that rule here:
   // the copy wrote a scope's "@" as "%40" after the site changed to "@" (full audit of 29 Sep 2026)
@@ -1261,15 +1286,15 @@ usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--ema
        smallprint show <registry>/<name>                       the record for one entry: baseline, how it was read, advisories, last releases; for example smallprint show npm/mcp-remote
        smallprint lock [--project] [--offline] [--file smallprint.lock]   write what this machine runs, and its instruction-file hashes, to a file you commit; --project keeps to this directory; --offline asks the record nothing
        smallprint check --locked [--project] [--file ...] [--sarif <file>] [--no-instruction-text]   compare with the lock, exit 2 when anything changed; local only, works offline, made for CI; under a changed instruction file it shows the lines added since the lock and their grades; --sarif also writes a SARIF log for a code-scanning upload
-       smallprint gate [--project] [--strict]                  ask the record about every server here: exit 3 when a high or critical advisory covers a version here, 2 when the small print changed between the lock and what runs here (--strict: or when something could not be answered); for a shell hook before a session
+       smallprint gate [--project] [--strict]                  ask the record about each server here that has a registry name: exit 3 when a high or critical advisory covers a version here, 2 when a change to the small print is on record between the lock and the pinned version (the newest on record when none is pinned) (--strict: or when something could not be answered); for a shell hook before a session
        smallprint sync --label "work laptop" [--yes] [--prune] [--dry-run] [--quiet] [--no-notify] [--migrate-unkeyed] [--base <url>]   (SMALLPRINT_TOKEN=sp_...)
        smallprint schedule --install --label "work laptop" [--every 6] | --status | --uninstall
-       sudo --preserve-env=PATH,SMALLPRINT_TOKEN smallprint schedule --install --system --label "work laptop"   (level four: a root-owned reporter the agent cannot reach)
+       sudo --preserve-env=PATH,SMALLPRINT_TOKEN smallprint schedule --install --system --label "work laptop"   (level four: a root-owned reporter)
        smallprint watch [--file smallprint.lock] [--no-notify] -- <server command> [its arguments]   start an MCP server through a watcher that passes every message through unchanged and, when the server's tools change, warns on stderr and with a desktop notification (--no-notify leaves the notification out); it never stops a call and sends nothing
        smallprint scan-chats [--yes] [--json]                   look through your agents' conversation logs on this machine for keys and passwords, after asking first; each finding is shown masked, nothing is sent and no log is changed
        smallprint --version
        smallprint version --check                              ask npm for the newest published version and say whether this one is it; sends one request and nothing else, and plain --version asks nothing
-  check   find every MCP server and skill your agents have installed and grade them; --json prints the inventory and sends nothing
+  check   find the MCP servers and skills in the agent configs it reads and grade them; --json prints the inventory and sends nothing
           also hashes your instruction files (CLAUDE.md, AGENTS.md, OpenClaw workspace, Cursor and Windsurf rules) and reports any that changed since the last run, locally;
           under a changed file it shows the lines that were added and grades them with the rules at https://smallprint.dev/how-we-grade;
           --no-instruction-text prints only the one line per file, with no text from the file, for a terminal or CI log that should not hold it;
@@ -1281,7 +1306,7 @@ usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--ema
   schedule  installs a job on this machine that runs sync every six hours (launchd on macOS, systemd on Linux); you install it, you remove it
   watch   put it in front of a server's command in your MCP config; it compares each tool's name, description and input schema with the last list it saw
           and with smallprint.lock, writes one line to the server's log in your MCP client when they differ, and the next check shows the changes;
-          it keeps only tool names, the kind of change, fingerprints and the descriptions before and after, never what a call sends or gets back
+          it keeps the last tool list it saw and a log of changes, never what a call sends or gets back
   scan-chats  reads the Claude Code, Codex and Gemini CLI conversation logs on this machine and names the file, the line and the kind of each key or password it finds;
           it runs only when you type it, asks first unless you add --yes, and --json prints the same findings, masked, for a script
 Five ways to keep the record of your instruction files, weakest to strongest:
@@ -1289,9 +1314,10 @@ Five ways to keep the record of your instruction files, weakest to strongest:
   sync      the record is on smallprint.dev and keeps every change; seen the next time you run sync
   a hook    the same sync from a Claude Code SessionStart hook, a git hook or your shell profile (https://smallprint.dev/cli#hooks)
   schedule  the same, every six hours, and a machine that goes quiet is reported
-  --system  the same from a root-owned job with a root-owned token: an agent running as you cannot read, forge or stop it
-Token: --token, or SMALLPRINT_TOKEN in the environment, or ~/.config/smallprint/token (a file only you can read; chmod 600).
-Nothing leaves the machine but names, versions, hosts and file hashes; sync adds a kind label and a keyed hash of the path for each instruction file, the machine label, and the names of any agent firewalls it finds installed (pipelock, AgentGate and the like), nothing about them. https://smallprint.dev/cli`;
+  --system  the same from a root-owned job with its own root-owned copy of the token
+Token: --token, or SMALLPRINT_TOKEN in the environment, or ~/.config/smallprint/token (chmod 600).
+check sends names, versions, hosts and file hashes; sync adds a kind label and hashes for each instruction file, the name of each top-level part of a JSON one, the machine label, and the names of any agent firewalls it finds installed.
+What each command sends, and when, is listed on the privacy page: https://smallprint.dev/legal/privacy`;
 
 /** The commands, each returning its exit code; an answer from the site that cannot be read ends in one sentence, never a stack trace. */
 const COMMANDS: Record<string, () => Promise<number>> = { check, show, lock, gate, sync, schedule, watch, "scan-chats": scanChatsCommand };

@@ -6,6 +6,7 @@
  * unknown" and counted with the other unknowns, which fail only under --strict.
  */
 import { inRange } from "./range";
+import { changesSmallPrint, textChanges } from "./release";
 
 export interface GateAdvisory {
   id: string;
@@ -58,8 +59,10 @@ export interface GateRecord {
   asset: { latestVersion: string | null; url: string };
   baseline?: { version: string } | null;
   advisories: GateAdvisory[];
-  releases: { from: string | null; to: string; publishedAt: string | null; worst: string; identical: boolean }[];
+  releases: { from: string | null; to: string; publishedAt: string | null; worst: string; identical: boolean; changes?: { field: string; severity?: string }[] }[];
   versions: { version: string; publishedAt: string | null; read?: boolean; contentHash: string | null }[];
+  /** The record's counts: `versions` lists only the newest ones (the read API's window), so a missing version may be older. */
+  counts?: { versions?: number };
 }
 
 export interface GateVerdict {
@@ -74,6 +77,60 @@ export interface GateVerdict {
 
 const RANK_ORDER = ["info", "low", "medium", "high", "critical"];
 
+type Row = GateRecord["versions"][number];
+type GateRelease = GateRecord["releases"][number];
+/** The parts of an answer that say what was compared: the editor extensions read these too (they bundle this file). */
+export type ComparedRecord<R extends GateRelease = GateRelease> = { releases: readonly R[]; versions: readonly Row[]; counts?: { versions?: number } | undefined };
+
+const rowOf = (e: Pick<ComparedRecord, "versions">, v: string | null | undefined): Row | undefined => (v ? e.versions.find((x) => x.version === v) : undefined);
+
+/**
+ * Why one version has no tool text the record can compare, in the gate's words. A version missing from the newest ones
+ * listed is not said to be off the record (pass 3 audit of 16 Oct 2026: mcp-remote 0.1.16 is on record, past the newest
+ * 50, and the gate said "is not on the record").
+ */
+export function noTextWords(e: Pick<ComparedRecord, "versions" | "counts">, v: string): string {
+  const r = rowOf(e, v);
+  const cut = (e.counts?.versions ?? e.versions.length) > e.versions.length;
+  if (!r) return cut ? `version ${v} is not among the newest ${e.versions.length} versions the record lists` : `version ${v} is not on the record`;
+  return r.read ? `the record holds no tool text for version ${v}, so there is nothing to compare` : `version ${v} is on the record but its small print was not read`;
+}
+
+/**
+ * The worst grade of the changes to the small print alone: a release's own `worst` counts its install script too, so one
+ * medium description change beside a high install script read "worst high" here and "worst medium" in smallprint-mcp
+ * (pass 4 audit of 16 Oct 2026).
+ */
+export const worstTextGrade = (rs: readonly GateRelease[]): string => rs.flatMap((r) => textChanges(r)).reduce<string>((w, c) => (c.severity && RANK_ORDER.indexOf(c.severity) > RANK_ORDER.indexOf(w) ? c.severity : w), "info");
+
+/** What the record holds between two versions of one entry (betweenVersions). */
+export type Between<R extends GateRelease = GateRelease> =
+  | { state: "no-text"; version: string; why: string }
+  | { state: "changed"; releases: R[]; worst: string }
+  | { state: "not-compared" }
+  | { state: "no-change" };
+
+/**
+ * What the record holds between two versions of one entry, the one rule the gate and both editor extensions read. Only
+ * the releases strictly after the earlier version and up to the later one, by publish date as the record orders them,
+ * count, and only those that hold a change to the small print. Two versions whose fingerprints differ, with a read
+ * version between them that no release on record reaches, were not compared: "no change" is not said for them (pass 5
+ * audit of 16 Oct 2026: sqry-mcp 32.0.1 and 33.0.1). A version with no tool text has nothing to compare. Until the pass 6
+ * audit of 16 Oct 2026 the extensions counted every release that ended between the two, so a release that started before
+ * the earlier version (@vicsee/mcp-server 0.3.3 to 0.4.1, read against a machine that moved from 0.4.0) was said to fall
+ * between them, and they said "no change" between versions the record never compared (atom-mcp-server 1.1.0 and 2.1.0).
+ */
+export function betweenVersions<R extends GateRelease>(e: ComparedRecord<R>, from: string, to: string): Between<R> {
+  for (const v of [to, from]) if (!rowOf(e, v)?.contentHash) return { state: "no-text", version: v, why: noTextWords(e, v) };
+  const [a, b] = [rowOf(e, from)!, rowOf(e, to)!];
+  if (from === to) return { state: "no-change" };
+  const [lo, hi] = [a.publishedAt ?? "", b.publishedAt ?? ""].sort() as [string, string];
+  const moved = e.releases.filter((r) => changesSmallPrint(r) && (r.publishedAt ?? "") > lo && (r.publishedAt ?? "") <= hi);
+  if (moved.length) return { state: "changed", releases: moved, worst: worstTextGrade(moved) };
+  const uncompared = a.contentHash !== b.contentHash && e.versions.some((x) => x.contentHash && (x.publishedAt ?? "") > lo && (x.publishedAt ?? "") <= hi && !e.releases.some((r) => r.to === x.version));
+  return uncompared ? { state: "not-compared" } : { state: "no-change" };
+}
+
 /**
  * One server against the record (tools audit of 4 Oct 2026, fixes 6 and 11). Three questions, each answered only when
  * the record can answer it:
@@ -82,22 +139,25 @@ const RANK_ORDER = ["info", "low", "medium", "high", "critical"];
  *    when the config pins none. It is compared with the version in the lock, and only the releases between the two
  *    count. A server pinned to the version in its lock has not changed, however many releases came after it: those are
  *    printed as news and do not fail the gate. Before this, every later release failed the gate on every run, for
- *    exactly the people who pin.
- *  - Is there tool text on record to compare? A version read and found to declare no tools, or never read, or not on
- *    record, has none, and the answer is "unknown", never "unchanged".
+ *    exactly the people who pin. A release counts only when it holds a change to the small print (decision 523): a
+ *    fingerprint that moved with no change written down is not one, and until 16 Oct 2026 the gate exited 2 for it.
+ *  - Is there tool text on record to compare? A version with no tool text on record has none, and the answer is
+ *    "unknown", never "unchanged".
  *  - Does a high or critical advisory's range cover the version it runs?
  */
 export function gateServer(e: GateRecord, installed: string | null, locked: { version: string | null; recordSha256?: string } | undefined): GateVerdict {
   const words: string[] = [];
   let changed = false;
   let unknown = false;
-  const row = (v: string | null | undefined) => (v ? e.versions.find((x) => x.version === v) : undefined);
-  // the lock's copy of the record digest for the locked version against the record now (decision 224)
+  const row = (v: string | null | undefined) => rowOf(e, v);
+  // the lock's copy of the record digest for the locked version against the record now (decision 224). A digest is a
+  // fingerprint, and a fingerprint that moved alone is not a change to the small print (decision 523): it is said, and
+  // counted with the unknowns
   if (locked?.recordSha256 && locked.version) {
     const now = row(locked.version)?.contentHash;
     if (now && now !== locked.recordSha256) {
       words.push(`the record's digest for ${locked.version} changed since the lock was written (was ${locked.recordSha256.slice(0, 12)}, now ${now.slice(0, 12)})`);
-      changed = true;
+      unknown = true;
     }
   }
   const latest = e.asset.latestVersion ?? e.baseline?.version ?? null;
@@ -105,42 +165,43 @@ export function gateServer(e: GateRecord, installed: string | null, locked: { ve
   const runsRow = row(runs);
   const from = locked?.version ?? null;
   const fromRow = row(from);
-  const noText = (v: string, r: typeof runsRow) => (!r ? `version ${v} is not on the record` : r.read ? `version ${v} was read and declares no tools of its own, so there is no tool text to compare` : `version ${v} is on the record but its small print was not read`);
-  const unpinned = installed ? "" : "not pinned, so the next start runs the latest; ";
+  const noText = (v: string) => noTextWords(e, v);
+  // what starts next is not predicted: the source can publish after the record's last read, and a cached copy can start
+  // instead (pass 4 audit of 16 Oct 2026: "the next start runs the latest, 1.1.7" when PyPI held 1.5.0)
+  const unpinned = installed ? "" : "not pinned, so the version that starts can change; ";
   if (!runs) {
     words.push("no version to compare: the config pins none and the record has none");
     unknown = true;
   } else if (!runsRow?.contentHash) {
-    words.push(`${unpinned}${noText(runs, runsRow)}`);
+    words.push(`${unpinned}${noText(runs)}`);
     unknown = true;
   } else if (from && !fromRow?.contentHash) {
-    words.push(`${unpinned}the lock holds ${from}: ${noText(from, fromRow)} with ${runs}`);
+    words.push(`${unpinned}the lock holds ${from}: ${noText(from)}, so it cannot be compared with ${runs}`);
     unknown = true;
   } else {
-    // the releases strictly after one version and up to the other, by publish date, as the record orders them
-    const between = (a: string, b: string) => {
-      const [lo, hi] = a <= b ? [a, b] : [b, a];
-      return e.releases.filter((r) => !r.identical && (r.publishedAt ?? "") > lo && (r.publishedAt ?? "") <= hi);
-    };
-    const worstOf = (rs: { worst: string }[]) => rs.reduce((w, r) => (RANK_ORDER.indexOf(r.worst) > RANK_ORDER.indexOf(w) ? r.worst : w), "info");
     const releases = (n: number) => `${n} release${n === 1 ? "" : "s"}`;
     if (from && fromRow) {
-      const moved = from === runs ? [] : between(fromRow.publishedAt ?? "", runsRow.publishedAt ?? "");
-      // two versions with different tool text differ, whether or not a release row sits between them
-      if (from !== runs && (moved.length || fromRow.contentHash !== runsRow.contentHash)) {
-        words.push(`small print changed between ${from} in the lock and ${runs}${installed ? "" : ", the latest, which the next start runs because the config pins no version"}${moved.length ? `: ${releases(moved.length)}, worst ${worstOf(moved)}` : ""}`);
+      // both versions have tool text here, so the answer is a change, no comparison, or no change (betweenVersions); the
+      // last branch below is only ever reached with "no-change"
+      const b = betweenVersions(e, from, runs);
+      const latestWords = installed ? "" : ", the newest on record (the config pins no version)";
+      if (b.state === "changed") {
+        words.push(`a change to the small print is on record between ${from} in the lock and ${runs}${latestWords}: ${releases(b.releases.length)}, worst ${b.worst}`);
         changed = true;
-      } else words.push(from === runs ? `runs ${runs}, the version in the lock` : `unchanged between ${from} in the lock and ${runs}`);
+      } else if (b.state === "not-compared") {
+        words.push(`not compared between ${from} in the lock and ${runs}${latestWords}: their fingerprints differ, and the record does not compare every version in between`);
+        unknown = true;
+      } else words.push(from !== runs ? `no change to the small print is on record between ${from} in the lock and ${runs}${latestWords}` : installed ? `runs ${runs}, the version in the lock` : `the newest on record, ${runs}, is the version in the lock (the config pins no version)`);
     } else if (installed) words.push(`pinned at ${runs}; no lock entry to compare it with`);
     else {
       // nothing pins it and no lock says what was read: what runs can change on any start, and the gate cannot say it has not
-      words.push(`not pinned, so the next start runs the latest, ${runs}, and no lock entry says which version was read; pin a version or write a lock`);
+      words.push(`not pinned, so the version that starts can change; the newest on record is ${runs}, and no lock entry says which version was read; pin a version or write a lock`);
       unknown = true;
     }
     // releases later than the one this machine runs: news for whoever pins, never a failure
     if (installed && latest && latest !== installed) {
-      const later = e.releases.filter((r) => !r.identical && (r.publishedAt ?? "") > (runsRow.publishedAt ?? ""));
-      if (later.length) words.push(`${releases(later.length)} after ${installed} changed the small print, worst ${worstOf(later)}; read the entry page before you move up`);
+      const later = e.releases.filter((r) => changesSmallPrint(r) && (r.publishedAt ?? "") > (runsRow.publishedAt ?? ""));
+      if (later.length) words.push(`${releases(later.length)} after ${installed} changed the small print, worst ${worstTextGrade(later)}; read the entry page before you move up`);
     }
   }
   // an advisory counts only when its range covers the version this machine runs; an unreadable range or an unknown version is said plainly

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Small Print level-four reporter. Runs as root from a root-owned scheduled job, so an
-agent running as the user cannot read its token, forge its report or stop it.
+"""Small Print level-four reporter. Runs as root from a root-owned scheduled job, with its
+own root-owned copy of the account's token.
 
-It does exactly what `smallprint sync` does for instruction files and skills, and nothing
-else: hash a fixed list of files under one user's home, hash each skill folder, and post
-kind labels, path hashes and content hashes to smallprint.dev. It never reads a file it did
-not list, never follows a symbolic link, never executes anything, and never sends a path,
-a file's contents or a config value. Standard library only, no dependencies, so the only
+It does what `smallprint sync` does for instruction files and skills: hash a fixed list of
+files under one user's home, hash each skill folder, and post the report to smallprint.dev
+in the same form as a sync. What that report holds is listed on the privacy page,
+https://smallprint.dev/legal/privacy. It never reads a file it did not list, never follows
+a symbolic link, never executes anything, and never sends a path, a file's contents or a
+config value. Standard library only, no dependencies, so the only
 code running as root is this file and the system interpreter.
 
     smallprint-report.py --user nick --label "mac mini" [--every 6] [--base https://smallprint.dev]
@@ -26,7 +27,7 @@ import urllib.error
 import urllib.request
 
 # the version of the smallprint package this file ships in; test/version.test.ts holds the two together
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 FILE_MAX = 5_000_000
 DIR_MAX_FILES = 200
 SKILL_MAX_FILES = 2000

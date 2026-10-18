@@ -7,7 +7,7 @@
  *
  * The command finds each mod among the Claude Code plugins on the machine, fingerprints its hooks modules and the files
  * they import (each is also a watched instruction file, so a change to its code is reported like a changed CLAUDE.md), and lists what the
- * code says it does. The list is read from the module's text, the events it passes to on() and the mods API calls it
+ * code can do. The list is read from the module's text, the events it passes to on() and the mods API calls it
  * writes out: code written to hide what it does is not caught, and a file loaded by a path built at run time is not
  * read. Nothing about a mod is sent.
  */
@@ -32,26 +32,34 @@ export interface Mod {
 const MODULE_MAX = 4 * 1024 * 1024;
 const ON = (events: string) => new RegExp(`\\bon\\(\\s*['"\`](?:${events})['"\`]`);
 
-/** In the order they are printed: what touches what Claude reads first, then reach outside Claude Code. */
-export const CAPABILITIES: readonly [RegExp, string][] = [
-  [ON("tool\\.describe"), "changes the tool descriptions Claude reads"],
-  [ON("prompt\\.(?:compose|section|context|attachment|submit|fill|suggest)|skill\\.prompt"), "changes what Claude is told: the system prompt, your prompts or a skill's text"],
-  [/\$\.prompt\.submit\s*\([^)]*asUser\s*:\s*true/s, "sends text to Claude as if you typed it"],
-  [ON("tool\\.(?:call|check)"), "allows, blocks or replaces tool calls"],
-  [ON("session\\.append"), "rewrites what the conversation keeps"],
-  [ON("agent\\.(?:offer|spawn)"), "changes which subagents run"],
-  [ON("plugin\\.register|engine\\.create"), "acts on other mods as they load"],
-  [ON("session\\.(?:send|receive)") , "exchanges messages with other sessions"],
-  [/\$\.session\.send\s*\(/, "exchanges messages with other sessions"],
-  [/\$\.http\./, "uses the network"],
-  [/\$\.process\./, "runs programs"],
-  [/\$\.fs\.write\s*\(/, "writes files"],
-  [/\$\.fs\.(?:read|list|stat|exists|ancestors)\s*\(/, "reads files"],
-  [/\$\.env\.set\s*\(/, "changes environment variables"],
-  [/\$\.mcp\./, "connects to MCP servers"],
-  [/\$\.model\./, "calls a model"],
-  [ON("\\*"), "handles every event"],
+/**
+ * In the order they are printed: what touches what Claude reads first, then reach outside Claude Code. Each is what the
+ * code can do, read from a hook it registers or an API it calls, never a claim that it does it: registering tool.describe
+ * is not changing a description (pass 3 audit of 16 Oct 2026). The third column is the label a run before then stored,
+ * so an upgrade does not report every ability as new.
+ */
+export const CAPABILITIES: readonly [RegExp, string, string][] = [
+  [ON("tool\\.describe"), "can change the tool descriptions Claude reads", "changes the tool descriptions Claude reads"],
+  [ON("prompt\\.(?:compose|section|context|attachment|submit|fill|suggest)|skill\\.prompt"), "can change what Claude is told: the system prompt, your prompts or a skill's text", "changes what Claude is told: the system prompt, your prompts or a skill's text"],
+  [/\$\.prompt\.submit\s*\([^)]*asUser\s*:\s*true/s, "can send text to Claude as if you typed it", "sends text to Claude as if you typed it"],
+  [ON("tool\\.(?:call|check)"), "can allow, block or replace tool calls", "allows, blocks or replaces tool calls"],
+  [ON("session\\.append"), "can rewrite what the conversation keeps", "rewrites what the conversation keeps"],
+  [ON("agent\\.(?:offer|spawn)"), "can change which subagents run", "changes which subagents run"],
+  [ON("plugin\\.register|engine\\.create"), "can act on other mods as they load", "acts on other mods as they load"],
+  [ON("session\\.(?:send|receive)") , "can exchange messages with other sessions", "exchanges messages with other sessions"],
+  [/\$\.session\.send\s*\(/, "can exchange messages with other sessions", "exchanges messages with other sessions"],
+  [/\$\.http\./, "can use the network", "uses the network"],
+  [/\$\.process\./, "can run programs", "runs programs"],
+  [/\$\.fs\.write\s*\(/, "can write files", "writes files"],
+  [/\$\.fs\.(?:read|list|stat|exists|ancestors)\s*\(/, "can read files", "reads files"],
+  [/\$\.env\.set\s*\(/, "can change environment variables", "changes environment variables"],
+  [/\$\.mcp\./, "can connect to MCP servers", "connects to MCP servers"],
+  [/\$\.model\./, "can call a model", "calls a model"],
+  [ON("\\*"), "can handle every event", "handles every event"],
 ];
+
+/** A label stored by a run before 16 Oct 2026, in today's words. */
+const CURRENT_LABEL = new Map<string, string>(CAPABILITIES.map(([, label, before]) => [before, label]));
 
 export function modCapabilities(src: string): string[] {
   const out: string[] = [];
@@ -164,7 +172,7 @@ export type ModBaseline = Record<string, string[]>;
 
 export function compareMods(mods: readonly Mod[], before: ModBaseline): { mod: Mod; added: string[]; first: boolean }[] {
   return mods.map((m) => {
-    const prev = before[m.module];
+    const prev = before[m.module]?.map((c) => CURRENT_LABEL.get(c) ?? c);
     return { mod: m, first: !prev, added: prev ? m.capabilities.filter((c) => !prev.includes(c)) : [] };
   });
 }

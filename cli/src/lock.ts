@@ -218,10 +218,12 @@ export function sarifLog(diffLines: readonly string[], lockPath: string, version
     return {
       ruleId: `smallprint/lock-${kind}`,
       level: "error",
-      message: { text: `${text}. The small print changed since ${lockPath} was written; if this is yours, run smallprint lock again and commit it.` },
+      // the lock check compares versions and fingerprints and reads no tool text, so the alert says what differs from the
+      // lock, never that the small print changed (audit of 16 Oct 2026)
+      message: { text: `${text}. This is not what ${lockPath} holds. If the change is yours, run smallprint lock again and commit it.` },
       ...(file && !file.includes(" ") ? { locations: [{ physicalLocation: { artifactLocation: { uri: file } } }] } : {}),
     };
   });
-  const rules = [...new Set(results.map((r) => r.ruleId))].map((id) => ({ id, shortDescription: { text: "The small print this project's agents read changed since the committed lock was written" }, helpUri: "https://smallprint.dev/cli" }));
+  const rules = [...new Set(results.map((r) => r.ruleId))].map((id) => ({ id, shortDescription: { text: "Differs from the committed lock" }, helpUri: "https://smallprint.dev/cli" }));
   return { version: "2.1.0", $schema: "https://json.schemastore.org/sarif-2.1.0.json", runs: [{ tool: { driver: { name: "smallprint", version, informationUri: "https://smallprint.dev/cli", rules } }, results }] };
 }

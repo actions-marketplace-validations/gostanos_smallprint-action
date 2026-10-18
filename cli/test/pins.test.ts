@@ -114,16 +114,13 @@ describe("a publish goes through the workflow, where npm attaches the signed bui
   });
 });
 
-// "about 125 KB ... plus a 23 KB Python helper" was said of 0.1.6 and still printed at 0.1.7, which was 135 KB and 29 KB
-describe("the sizes the README gives", () => {
-  const said = /about (\d+) KB of unminified JavaScript plus a (\d+) KB Python helper/.exec(read("packages/cli/README.md"));
-  const kb = (p: string) => statSync(join(ROOT, p)).size / 1000;
-
-  it("are within a twentieth of the Python helper's size, and of the built file's when it has been built", () => {
-    expect(said).not.toBeNull();
-    expect(Math.abs(Number(said![2]) - kb("packages/cli/report/smallprint-report.py")) / kb("packages/cli/report/smallprint-report.py")).toBeLessThan(0.05);
-    const built = "packages/cli/dist/smallprint.js";
-    // the built file is not in the repository; a build that is older than the source says nothing about this version
-    if (existsSync(join(ROOT, built)) && statSync(join(ROOT, built)).mtimeMs >= statSync(join(ROOT, "packages/cli/src/main.ts")).mtimeMs) expect(Math.abs(Number(said![1]) - kb(built)) / kb(built)).toBeLessThan(0.05);
+// the README gave the installed size in KB until 15 Oct 2026, and the figure went stale at each release (230 KB was printed
+// for a 267 KB file); Nick: "Less maintenance and management the better". It names the two files instead, and this holds
+// it to that, so a size does not creep back in
+describe("the README names the installed files without a size", () => {
+  it("says one file of JavaScript and one Python helper, and gives no KB figure for them", () => {
+    const readme = read("packages/cli/README.md");
+    expect(readme).toContain("npm installs one file of unminified JavaScript and one Python helper");
+    expect(readme).not.toMatch(/\d+ KB of unminified JavaScript|\d+ KB Python helper/);
   });
 });
