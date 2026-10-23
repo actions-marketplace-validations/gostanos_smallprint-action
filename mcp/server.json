@@ -9,13 +9,13 @@
   },
   "description": "Check an MCP server, skill or plugin before your agent uses it: tool text on record, changes graded.",
   "websiteUrl": "https://smallprint.dev",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "smallprint-mcp",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "transport": {
         "type": "stdio"
       }

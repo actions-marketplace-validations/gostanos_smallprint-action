@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 
 # the version of the smallprint package this file ships in; test/version.test.ts holds the two together
-VERSION = "1.5.2"
+VERSION = "1.6.0"
 FILE_MAX = 5_000_000
 DIR_MAX_FILES = 200
 SKILL_MAX_FILES = 2000

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "written": "2026-10-18T04:14:53.091Z",
+  "written": "2026-10-23T19:33:55.669Z",
   "scope": "project",
   "items": [
     {
@@ -9,8 +9,8 @@
       "name": "check",
       "canonicalName": null,
       "version": null,
-      "skillMdSha256": "bdd75d224b1147493f51c7730fb8e47ab1bbe8e3ce435817a3b0c7d5848fffa3",
-      "treeSha256": "b7caf76eb5cc4cce3e5e0313310596194ea5251cfb165947de121cedc3d75a43"
+      "skillMdSha256": "511175d1ad0224ec9434a496d685f0f9d6b06d1400ca8de8685ac533c029e79c",
+      "treeSha256": "5d142a0e1707e74d5837aa14181f711ea5f0706a7f571b8153bedb3ff29470d7"
     },
     {
       "kind": "agent-skill",
@@ -18,8 +18,8 @@
       "name": "gate",
       "canonicalName": null,
       "version": null,
-      "skillMdSha256": "04a0e3356ec9eb1cf77d52d99aa56a0500a9ebac7a3a02ba6ea5b3fa756b974d",
-      "treeSha256": "3a6450a2ffadf78f91781dffb2e05c54ad544254c7a1065220987e3df114c209"
+      "skillMdSha256": "0d5c4debc575395b394141907b9719e2b15bfca30babf659d8e06785d083ff30",
+      "treeSha256": "3c06303484502eca0df0b23b1bb6da0d050c27f828bfbf5a5d83102d12c415c6"
     },
     {
       "kind": "agent-skill",
@@ -27,22 +27,22 @@
       "name": "locked",
       "canonicalName": null,
       "version": null,
-      "skillMdSha256": "a68f24bec3a20b91ea25fed3426f42f0f8efb58b8dbc1050a2f3a64a99e75521",
-      "treeSha256": "7ec0d84daf5424b5e68e2f3585006ed0df1a23cac5ea467ae07f4f76f27e9f25"
+      "skillMdSha256": "a72d82c922b54c28c7cd7f394acfdd5518f08fe084297e41b8734786f86d56aa",
+      "treeSha256": "7fe44dfb982cb9f0709c084e6d9928c89e422cea8b52a133059396199195bc96"
     },
     {
       "kind": "mcp",
       "host": "claude-code",
       "name": "smallprint",
       "canonicalName": "npm:smallprint-mcp",
-      "version": "1.1.0"
+      "version": "1.1.1"
     }
   ],
   "files": [
     {
       "path": ".mcp.json",
       "kind": "Claude Code MCP servers, project",
-      "sha256": "dfaaa519a993c63f76856b8ed8fa0e03c679fcc007209062c8eb6da0bc6acdab"
+      "sha256": "8f932e1d74f3d68bc3ef4f934a7fed1226736d81ab04a09dc717223fa3c185c8"
     }
   ],
   "covers": [

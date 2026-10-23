@@ -1,6 +1,6 @@
 {
   "name": "smallprint",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "private": false,
   "description": "Small Print (MCP): see the MCP servers, skills and plugins your agents have installed, the advisories on record for them, and the changes on record to what they tell your agent.",
   "license": "MIT",
@@ -12,10 +12,10 @@
     "prepublishOnly": "node ../../ops/deploy/publish-guard.mjs && pnpm build"
   },
   "devDependencies": {
-    "tsup": "^8.5.1",
+    "tsup": "^9.0.0",
     "tsx": "^4.23.13",
     "typescript": "~5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "bin": {
     "smallprint": "dist/smallprint.js"
