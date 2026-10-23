@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "written": "2026-10-21T12:31:48.034Z",
+  "written": "2026-10-23T19:33:55.669Z",
   "scope": "project",
   "items": [
     {
@@ -35,14 +35,14 @@
       "host": "claude-code",
       "name": "smallprint",
       "canonicalName": "npm:smallprint-mcp",
-      "version": "1.1.0"
+      "version": "1.1.1"
     }
   ],
   "files": [
     {
       "path": ".mcp.json",
       "kind": "Claude Code MCP servers, project",
-      "sha256": "dfaaa519a993c63f76856b8ed8fa0e03c679fcc007209062c8eb6da0bc6acdab"
+      "sha256": "8f932e1d74f3d68bc3ef4f934a7fed1226736d81ab04a09dc717223fa3c185c8"
     }
   ],
   "covers": [

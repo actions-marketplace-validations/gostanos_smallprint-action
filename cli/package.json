@@ -12,10 +12,10 @@
     "prepublishOnly": "node ../../ops/deploy/publish-guard.mjs && pnpm build"
   },
   "devDependencies": {
-    "tsup": "^8.5.1",
+    "tsup": "^9.0.0",
     "tsx": "^4.23.13",
     "typescript": "~5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "bin": {
     "smallprint": "dist/smallprint.js"
