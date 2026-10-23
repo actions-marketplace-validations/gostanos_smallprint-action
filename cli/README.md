@@ -3,21 +3,22 @@
 The thin, open client for [Small Print](https://smallprint.dev): find the MCP servers and agent skills your agents have installed, see the advisories on record for them, and get a grade with the rule printed next to it.
 
 ```
-npx smallprint@1.5.2 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
+npx smallprint@1.6.0 check --no-upload   # see what your agents installed; with this flag alone, nothing is sent
 npx smallprint check            # discover and print; asks before it sends anything, then grades; then one question: watch these in the daily brief?
 npx smallprint check --upload   # answer the send question up front (a script or CI has no terminal to ask in, so without it nothing is sent)
 npx smallprint check --email you@company.com   # answer it up front; --no-signup never asks
 npx smallprint check --share    # also get a card link you can post
 npx smallprint check --json     # machine-readable inventory, nothing sent; says so in itself (about, sent) and names its fields at https://smallprint.dev/cli#json
-npx smallprint@1.5.2 check        # pinned to one exact version; pin it in anything unattended
+npx smallprint@1.6.0 check        # pinned to one exact version; pin it in anything unattended
 npx smallprint check --live          # ask your hosted servers what they serve now, and compare with the record for their version
 npx smallprint check --live-local    # the same for local servers too; shows the commands it will start and asks first, and never calls a tool; it starts them with the keys in your config, so keep production credentials out of that config
 npx smallprint show npm/mcp-remote   # the record for one entry: baseline, how it was read, advisories, last releases
 npx smallprint show npm/@modelcontextprotocol/server-filesystem   # a real one: the reference filesystem server's 2026.7.10 release changed what one tool tells the agent (read_media_file now returns any file, not only images and audio); the record grades it medium
 npx smallprint check --locked --sarif smallprint.sarif   # the lock check, plus a SARIF log for a code-scanning upload
-npx smallprint@1.5.2 version --check   # is a newer version published? one request to npm and nothing else; plain --version asks nothing
+npx smallprint@1.6.0 version --check   # is a newer version published? one request to npm and nothing else; plain --version asks nothing
 npx smallprint watch -- npx -y @modelcontextprotocol/server-filesystem ~/projects   # run a server through a watcher that warns when its tools change and never stops a call
 npx smallprint scan-chats            # look for keys and passwords in your agents' conversation logs on this machine; asks first, sends nothing
+ANTHROPIC_API_KEY=... npx smallprint cost --local   # what each MCP server's tool definitions cost a model on every request, counted with your own key; nothing goes to smallprint.dev
 
 SMALLPRINT_TOKEN=sp_... npx smallprint sync --label "work laptop"   # pin what you run to your daily brief
 npx smallprint sync --label "work laptop" --dry-run                 # show what would be pinned
@@ -75,7 +76,7 @@ With [pre-commit](https://pre-commit.com), the same check runs before every comm
 ```yaml
 repos:
   - repo: https://github.com/gostanos/smallprint-action
-    rev: v1.18
+    rev: v1.19
     hooks:
       - id: smallprint-locked   # runs smallprint check --locked; the commit stops when anything differs from the lock
       - id: smallprint-lock     # only when you ask: pre-commit run smallprint-lock --hook-stage manual
@@ -120,6 +121,16 @@ To use it, put `npx -y smallprint watch --` in front of the server's command in 
 ```
 
 Pin the version (`smallprint@<version>`) once you have read it, as with any `npx` line. `check`, `lock` and `gate` read a wrapped entry as the server inside it, so wrapping a server does not change how it is listed or graded. `--file <path>` names a lock other than `smallprint.lock` in the folder the server starts in.
+
+## Count what your MCP servers' tools cost
+
+```
+ANTHROPIC_API_KEY=... npx smallprint cost            # hosted servers only
+ANTHROPIC_API_KEY=... npx smallprint cost --local    # local servers too; shows the commands it will start and asks first
+npx smallprint cost --json                           # the same counts for a script
+```
+
+Every request your agent sends to a model carries each connected tool's name, description and input schema. `smallprint cost` asks each server for its tools the way `check --live` does, sends those definitions to Anthropic's token counter with your own key (Anthropic does not charge for counting), and prints each server's tokens and what they cost on one request on Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.1, without caching. The count leaves out the one-word message it sends and the fixed instructions Anthropic adds for any request with tools, so it is the definitions alone. It sends nothing to smallprint.dev. When the total is over 100,000 tokens it says so, because Haiku 5.5 then charges its higher price for the whole prompt.
 
 ## Look for keys and passwords in your agents' conversation logs
 

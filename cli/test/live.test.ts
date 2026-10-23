@@ -48,7 +48,7 @@ describe("the live check (decision 269)", () => {
         if (m.method === "tools/list") console.log(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { tools: [{ name: "read", description: "Read a file.", inputSchema: {} }] } }));
       });`);
     const r = await readStdio({ command: process.execPath, args: [server], env: {}, url: null }, 10_000);
-    expect(r).toEqual({ ok: true, tools: [{ name: "read", description: "Read a file." }] });
+    expect(r).toEqual({ ok: true, tools: [{ name: "read", description: "Read a file.", inputSchema: {} }] });
   });
 
   it("reads a hosted server over streamable HTTP, including an answer sent as an event stream", async () => {

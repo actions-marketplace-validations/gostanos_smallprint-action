@@ -12,7 +12,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { DiscoveredServer } from "./parse";
 
-export interface ServedTool { name: string; description: string }
+/** A tool as the server serves it; the input schema is kept for `smallprint cost` and never compared (see above). */
+export interface ServedTool { name: string; description: string; inputSchema?: unknown }
 export interface RecordTool { name: string; descriptionSha256: string }
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -84,7 +85,7 @@ export function launchFor(s: DiscoveredServer): Launch | null {
 const rpc = (id: number, method: string, params: unknown = {}) => JSON.stringify({ jsonrpc: "2.0", id, method, params });
 const initParams = { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "smallprint-live", version: "1" } };
 type Rpc = { id?: number; result?: { tools?: { name?: unknown; description?: unknown }[]; nextCursor?: string }; error?: { message?: string } };
-const toServed = (tools: { name?: unknown; description?: unknown }[] | undefined): ServedTool[] => (tools ?? []).map((t) => ({ name: String(t.name ?? ""), description: String(t.description ?? "") }));
+const toServed = (tools: { name?: unknown; description?: unknown; inputSchema?: unknown }[] | undefined): ServedTool[] => (tools ?? []).map((t) => ({ name: String(t.name ?? ""), description: String(t.description ?? ""), inputSchema: t.inputSchema }));
 
 /** Parse a streamable HTTP answer, JSON or a text/event-stream carrying JSON in its data lines, and return the reply with this id. */
 async function reply(res: Response, id: number): Promise<Rpc | null> {

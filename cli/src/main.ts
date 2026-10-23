@@ -39,6 +39,7 @@ import { HTML_FILE, matchResults, NO_COVERING_ADVISORY, renderReport, rowsOf, ty
 import { formatLineChange, keyId, lockedLineChange, lockLineMemory, rememberLines, type LineChange } from "./lines";
 import type { DiscoveredServer } from "./parse";
 import { compareTools, launchFor, lookupFailed, plainUrl, readHosted, readStdio, type RecordTool, type ToolComparison } from "./live";
+import { costLines, CountRefused, definitionTokens, measureBaseline, type CostRow } from "./cost";
 import { launchdPlist, schtasksCommand, systemdUnits, schedulePlan, systemLaunchdPlist, systemPaths, systemPlan, systemUnits } from "./schedule";
 import { formatWatchEntries, runWatch, watchLogSince } from "./watch";
 import { chatSources, countByKind, formatScan, SCAN_QUESTION, scanChats } from "./chatscan";
@@ -77,7 +78,7 @@ const base = (opt("base") ?? (systemMode ? undefined : process.env.SMALLPRINT_BA
   }
 }
 
-const VERSION = "1.5.2";
+const VERSION = "1.6.0";
 const TIMEOUT = () => AbortSignal.timeout(20_000);
 /**
  * The one command for level four. sudo's own environment reset drops NODE_OPTIONS and every other variable an agent
@@ -1279,6 +1280,73 @@ async function scanChatsCommand(): Promise<number> {
   return 0;
 }
 
+/**
+ * `smallprint cost [--local] [--yes] [--json]` (decision 601): what each MCP server's tool definitions cost a model on
+ * every request. Hosted servers are asked for their tools as `check --live` asks them; local servers are started only
+ * with --local, after the commands are shown and the person answers yes. The definitions go to Anthropic's token
+ * counter with the person's own key (ANTHROPIC_API_KEY), which Anthropic does not charge for; nothing goes to
+ * smallprint.dev. Exit 1 when there is no key or the key is refused, 0 otherwise.
+ */
+async function cost(): Promise<number> {
+  if (flag("no-upload")) {
+    console.log("--no-upload: nothing sent, so nothing was counted. smallprint cost sends each server's tool definitions to Anthropic's token counter with your key; it sends nothing to smallprint.dev.");
+    return 0;
+  }
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) {
+    console.log("smallprint cost needs your Anthropic API key in ANTHROPIC_API_KEY. It sends each server's tool definitions (names, descriptions, input schemas) to Anthropic's token counter, which Anthropic does not charge for, and sends nothing to smallprint.dev.");
+    return 1;
+  }
+  const servers = discover().items.filter((i): i is DiscoveredServer => i.kind === "mcp");
+  const remote = servers.filter((s) => s.transport === "http" || s.transport === "sse");
+  const local = servers.filter((s) => s.transport === "stdio");
+  const withLocal = flag("local");
+  if (!servers.length) { console.log("No MCP servers found in the agent configs smallprint reads, so there is nothing to count."); return 0; }
+  const rows: CostRow[] = [];
+  const reads: { name: string; read: Awaited<ReturnType<typeof readHosted>> }[] = [];
+  if (!flag("json")) console.log("Asking each server for its tools, then counting them with Anthropic's token counter and your key. Nothing is sent to smallprint.dev.\n");
+  for (const s of remote) {
+    const url = launchFor(s)?.url;
+    if (!url) { rows.push({ name: s.name, tools: 0, tokens: null, why: "no address in its config" }); continue; }
+    reads.push({ name: s.name, read: await readHosted(url) });
+  }
+  if (local.length && !withLocal) {
+    for (const s of local) rows.push({ name: s.name, tools: 0, tokens: null, why: "a local server; add --local to start it and count it" });
+  } else if (local.length) {
+    const plan = local.map((s) => ({ s, l: launchFor(s) })).filter((x) => x.l && x.l.command);
+    console.log(`--local starts ${plan.length} local server${plan.length === 1 ? "" : "s"} with the command, arguments and environment in your config, asks each for its tools, and stops it:`);
+    for (const { s, l } of plan) console.log(`  ${s.name}: ${l!.command} ${l!.args.join(" ")}`);
+    let go = flag("yes");
+    if (!go) {
+      if (!process.stdin.isTTY) { console.log("\nNo terminal to ask in; nothing started. Run again with --yes to start them."); go = false; }
+      else go = isYes(await ask("\nStart them now? This runs their code, as your agent does. [y/N] "));
+    }
+    if (go) { console.log(""); for (const { s, l } of plan) reads.push({ name: s.name, read: await readStdio(l!) }); }
+    else for (const { s } of plan) rows.push({ name: s.name, tools: 0, tokens: null, why: "not started" });
+  }
+  let base;
+  try {
+    base = await measureBaseline(key);
+  } catch (err) {
+    if (!(err instanceof CountRefused)) throw err;
+    console.log(err.message);
+    return 1;
+  }
+  for (const { name, read } of reads) {
+    if (!read.ok) { rows.push({ name, tools: 0, tokens: null, why: read.why }); continue; }
+    try {
+      rows.push({ name, tools: read.tools.length, tokens: await definitionTokens(key, read.tools, base) });
+    } catch (err) {
+      if (!(err instanceof CountRefused)) throw err;
+      if (/HTTP 40[13] to the key/.test(err.message)) { console.log(err.message); return 1; }
+      rows.push({ name, tools: read.tools.length, tokens: null, why: err.message });
+    }
+  }
+  if (flag("json")) { console.log(JSON.stringify({ sent: "tool definitions to Anthropic's token counter only", model: "claude-haiku-5-5", toolUseTokens: base.toolUse, servers: rows }, null, 2)); return 0; }
+  for (const l of costLines(rows, base)) console.log(l);
+  return 0;
+}
+
 /** Each line of --help that names a command or a flag; test/help.test.ts holds this list to the commands and flags the code reads. */
 const HELP = `smallprint ${VERSION}
 usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--email <you@x>] [--no-signup] [--no-instruction-text] [--html [file]] [--base <url>]
@@ -1291,6 +1359,7 @@ usage: smallprint check [--json] [--no-upload] [--upload|--yes] [--share] [--ema
        smallprint schedule --install --label "work laptop" [--every 6] | --status | --uninstall
        sudo --preserve-env=PATH,SMALLPRINT_TOKEN smallprint schedule --install --system --label "work laptop"   (level four: a root-owned reporter)
        smallprint watch [--file smallprint.lock] [--no-notify] -- <server command> [its arguments]   start an MCP server through a watcher that passes every message through unchanged and, when the server's tools change, warns on stderr and with a desktop notification (--no-notify leaves the notification out); it never stops a call and sends nothing
+       smallprint cost [--local] [--yes] [--json]              count what each MCP server's tool definitions cost a model on every request, with your own key (ANTHROPIC_API_KEY); --local also starts local servers, after showing the commands and asking; the definitions go to Anthropic's free token counter and nothing goes to smallprint.dev
        smallprint scan-chats [--yes] [--json]                   look through your agents' conversation logs on this machine for keys and passwords, after asking first; each finding is shown masked, nothing is sent and no log is changed
        smallprint --version
        smallprint version --check                              ask npm for the newest published version and say whether this one is it; sends one request and nothing else, and plain --version asks nothing
@@ -1320,7 +1389,7 @@ check sends names, versions, hosts and file hashes; sync adds a kind label and h
 What each command sends, and when, is listed on the privacy page: https://smallprint.dev/legal/privacy`;
 
 /** The commands, each returning its exit code; an answer from the site that cannot be read ends in one sentence, never a stack trace. */
-const COMMANDS: Record<string, () => Promise<number>> = { check, show, lock, gate, sync, schedule, watch, "scan-chats": scanChatsCommand };
+const COMMANDS: Record<string, () => Promise<number>> = { check, show, lock, gate, sync, schedule, watch, "scan-chats": scanChatsCommand, cost };
 
 if (cmd && Object.hasOwn(COMMANDS, cmd)) {
   let code: number;
